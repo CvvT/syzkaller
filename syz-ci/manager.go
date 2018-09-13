@@ -20,6 +20,8 @@ import (
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/pkg/report"
 	"github.com/google/syzkaller/pkg/vcs"
+	"github.com/google/syzkaller/sys/targets"
+	"github.com/google/syzkaller/vm"
 )
 
 // This is especially slightly longer than syzkaller rebuild period.
@@ -31,15 +33,22 @@ const kernelRebuildPeriod = syzkallerRebuildPeriod + time.Hour
 
 // List of required files in kernel build (contents of latest/current dirs).
 var imageFiles = map[string]bool{
-	"tag":                   true,  // serialized BuildInfo
-	"kernel.config":         false, // kernel config used for build
-	"image":                 true,  // kernel image
-	"kernel":                false,
-	"initrd":                false,
-	"key":                   false, // root ssh key for the image
-	"obj/vmlinux":           false, // Linux object file with debug info
-	"obj/zircon.elf":        false, // Zircon object file with debug info
-	"obj/akaros-kernel-64b": false, // Akaros object file with debug info
+	"tag":           true,  // serialized BuildInfo
+	"kernel.config": false, // kernel config used for build
+	"image":         true,  // kernel image
+	"kernel":        false,
+	"initrd":        false,
+	"key":           false, // root ssh key for the image
+}
+
+func init() {
+	for _, arches := range targets.List {
+		for _, arch := range arches {
+			if arch.KernelObject != "" {
+				imageFiles["obj/"+arch.KernelObject] = false
+			}
+		}
+	}
 }
 
 // Manager represents a single syz-manager instance.
@@ -347,11 +356,8 @@ func (mgr *Manager) testImage(imageDir string, info *BuildInfo) error {
 		return fmt.Errorf("failed to create manager config: %v", err)
 	}
 	defer os.RemoveAll(mgrcfg.Workdir)
-	switch typ := mgrcfg.Type; typ {
-	case "gce", "qemu", "gvisor":
-	default:
-		// Other types don't support creating machines out of thin air.
-		return nil
+	if !vm.AllowsOvercommit(mgrcfg.Type) {
+		return nil // No support for creating machines out of thin air.
 	}
 	env, err := instance.NewEnv(mgrcfg)
 	if err != nil {
