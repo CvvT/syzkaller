@@ -1,5 +1,5 @@
 # -manager=10.0.2.10:39311
-./bin/syz-fuzzer -executor=./bin/syz-executor \
+./bin/linux_amd64/syz-fuzzer -executor=./bin/syz-executor \
     -name=vm-0 \
     -arch=amd64 \
     -sandbox=namespace \
@@ -9,4 +9,5 @@
     -debug=false \
     -test=false \
     -runtest=false \
-    -output=file
+    -output=stdout \
+    -config=./my.cfg 

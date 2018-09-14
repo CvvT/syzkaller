@@ -280,7 +280,7 @@ func (fuzzer *Fuzzer) poll(args *rpctype.CheckArgs) bool {
 	
 	Candidates := fuzzer.loadcorpus(fuzzer.cfg, args)
 
-	for _, candidate := range Candidates {
+	for _, candidate := range *Candidates {
 		p, err := fuzzer.target.Deserialize(candidate.Prog)
 		if err != nil {
 			log.Fatalf("failed to parse program from manager: %v", err)
