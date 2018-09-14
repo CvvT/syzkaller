@@ -180,9 +180,9 @@ func Complete(cfg *Config) error {
 	default:
 		return fmt.Errorf("config param sandbox must contain one of none/setuid/namespace")
 	}
-	if err := checkSSHParams(cfg); err != nil {
-		return err
-	}
+	// if err := checkSSHParams(cfg); err != nil {
+	// 	return err
+	// }
 
 	cfg.KernelObj = osutil.Abs(cfg.KernelObj)
 	if cfg.KernelSrc == "" {
