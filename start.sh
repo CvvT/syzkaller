@@ -9,5 +9,5 @@
     -debug=false \
     -test=false \
     -runtest=false \
-    -output=file \
-    -config=workdir/my.cfg 
+    -output=stdout \
+    -config=./my.cfg 
