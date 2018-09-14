@@ -11,8 +11,9 @@ import (
 	"runtime"
 	"runtime/debug"
 	"sync"
-	"sync/atomic"
-	"time"
+	_ "sync/atomic"
+	_ "time"
+	"path/filepath"
 
 	"github.com/google/syzkaller/pkg/hash"
 	"github.com/google/syzkaller/pkg/host"
@@ -20,7 +21,7 @@ import (
 	"github.com/google/syzkaller/pkg/ipc/ipcconfig"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/pkg/rpctype"
+	_ "github.com/google/syzkaller/pkg/rpctype"
 	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
 	"github.com/google/syzkaller/sys"
@@ -276,7 +277,7 @@ func main() {
 
 func (fuzzer *Fuzzer) poll(args *rpctype.CheckArgs) bool {
 	
-	candidates := fuzzer.loadcorpus(fuzzer.cfg, args)
+	Candidates := fuzzer.loadcorpus(fuzzer.cfg, args)
 
 	for _, candidate := range Candidates {
 		p, err := fuzzer.target.Deserialize(candidate.Prog)
@@ -299,7 +300,7 @@ func (fuzzer *Fuzzer) poll(args *rpctype.CheckArgs) bool {
 		sig := hash.Hash(candidate.Prog)
 		fuzzer.addInputToCorpusRaw(p, sig)
 	}
-	return len(candidates) != 0 
+	return len(*Candidates) != 0 
 }
 
 func (fuzzer *Fuzzer) sendInputToManager(inp rpctype.RPCInput) {
@@ -426,7 +427,7 @@ func parseOutputType(str string) OutputType {
 
 func (fuzzer *Fuzzer) loadcorpus(cfg *mgrconfig.Config, args *rpctype.CheckArgs) *[]rpctype.RPCCandidate {
 	log.Logf(0, "loading corpus...")
-	corpusDB, err = db.Open(filepath.Join(cfg.Workdir, "corpus.db"))
+	corpusDB, err := db.Open(filepath.Join(cfg.Workdir, "corpus.db"))
 	if err != nil {
 		log.Fatalf("failed to open corpus database: %v", err)
 	}
