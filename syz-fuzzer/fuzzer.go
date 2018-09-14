@@ -24,9 +24,11 @@ import (
 	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
 	_ "github.com/google/syzkaller/sys"
+	"github.com/google/syzkaller/mgrconfig"
 )
 
 type Fuzzer struct {
+	cfg         *mgrconfig.Config
 	name        string
 	outputType  OutputType
 	config      *ipc.Config
@@ -93,6 +95,7 @@ func main() {
 	debug.SetGCPercent(50)
 
 	var (
+		flagConfig  = flag.String("config", "", "configuration file")
 		flagName    = flag.String("name", "test", "unique name for manager")
 		flagOS      = flag.String("os", runtime.GOOS, "target OS")
 		flagArch    = flag.String("arch", runtime.GOARCH, "target arch")
@@ -110,6 +113,21 @@ func main() {
 	target, err := prog.GetTarget(*flagOS, *flagArch)
 	if err != nil {
 		log.Fatalf("%v", err)
+	}
+
+	cfg, err := mgrconfig.LoadFile(*flagConfig)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	syscalls, err := mgrconfig.ParseEnabledSyscalls(target, cfg.EnabledSyscalls, cfg.DisabledSyscalls)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	var enabledSyscalls []int
+	for c := range syscalls {
+		enabledSyscalls = append(enabledSyscalls, c)
 	}
 
 	config, execOpts, err := ipcconfig.Default(target)
@@ -152,21 +170,43 @@ func main() {
 		runtime.MemProfileRate = 0
 	}
 
-	log.Logf(0, "dialing manager at %v", *flagManager)
-	manager, err := rpctype.NewRPCClient(*flagManager)
-	if err != nil {
-		log.Fatalf("failed to connect to manager: %v ", err)
-	}
-	a := &rpctype.ConnectArgs{Name: *flagName}
 	r := &rpctype.ConnectRes{}
-	if err := manager.Call("Manager.Connect", a, r); err != nil {
-		log.Fatalf("failed to connect to manager: %v ", err)
-	}
-	if r.CheckResult == nil {
-		checkArgs.gitRevision = r.GitRevision
-		checkArgs.targetRevision = r.TargetRevision
-		checkArgs.enabledCalls = r.EnabledCalls
-		checkArgs.allSandboxes = r.AllSandboxes
+	if *flagManager != "" {
+		log.Logf(0, "dialing manager at %v", *flagManager)
+		manager, err := rpctype.NewRPCClient(*flagManager)
+		if err != nil {
+			log.Fatalf("failed to connect to manager: %v ", err)
+		}
+
+		a := &rpctype.ConnectArgs{Name: *flagName}
+		if err := manager.Call("Manager.Connect", a, r); err != nil {
+			log.Fatalf("failed to connect to manager: %v ", err)
+		}
+	
+		if r.CheckResult == nil {
+			checkArgs.gitRevision = r.GitRevision
+			checkArgs.targetRevision = r.TargetRevision
+			checkArgs.enabledCalls = r.EnabledCalls
+			checkArgs.allSandboxes = r.AllSandboxes
+			r.CheckResult, err = checkMachine(checkArgs)
+			if err != nil {
+				r.CheckResult = &rpctype.CheckArgs{
+					Error: err.Error(),
+				}
+			}
+			r.CheckResult.Name = *flagName
+			if err := manager.Call("Manager.Check", r.CheckResult, nil); err != nil {
+				log.Fatalf("Manager.Check call failed: %v", err)
+			}
+			if r.CheckResult.Error != "" {
+				log.Fatalf("%v", r.CheckResult.Error)
+			}
+		}
+	} else {
+		checkArgs.gitRevision = sys.GitRevision
+		checkArgs.targetRevision = target.TargetRevision
+		checkArgs.enabledCalls = enabledSyscalls
+		checkArgs.allSandboxes = true
 		r.CheckResult, err = checkMachine(checkArgs)
 		if err != nil {
 			r.CheckResult = &rpctype.CheckArgs{
@@ -174,13 +214,9 @@ func main() {
 			}
 		}
 		r.CheckResult.Name = *flagName
-		if err := manager.Call("Manager.Check", r.CheckResult, nil); err != nil {
-			log.Fatalf("Manager.Check call failed: %v", err)
-		}
-		if r.CheckResult.Error != "" {
-			log.Fatalf("%v", r.CheckResult.Error)
-		}
+		r.CheckResult.EnabledCalls = enabledSyscalls
 	}
+
 	log.Logf(0, "syscalls: %v", len(r.CheckResult.EnabledCalls))
 	for _, feat := range r.CheckResult.Features {
 		log.Logf(0, "%v: %v", feat.Name, feat.Reason)

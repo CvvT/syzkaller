@@ -1,0 +1,12 @@
+# -manager=10.0.2.10:39311
+./bin/syz-fuzzer -executor=./bin/syz-executor \
+    -name=vm-0 \
+    -arch=amd64 \
+    -sandbox=namespace \
+    -procs=1 \
+    -v=100 \
+    -cover=true \
+    -debug=false \
+    -test=false \
+    -runtest=false \
+    -output=file
