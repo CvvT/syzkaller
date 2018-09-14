@@ -23,8 +23,8 @@ import (
 	"github.com/google/syzkaller/pkg/rpctype"
 	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
-	_ "github.com/google/syzkaller/sys"
-	"github.com/google/syzkaller/mgrconfig"
+	"github.com/google/syzkaller/sys"
+	"github.com/google/syzkaller/pkg/mgrconfig"
 )
 
 type Fuzzer struct {
@@ -204,7 +204,7 @@ func main() {
 		}
 	} else {
 		checkArgs.gitRevision = sys.GitRevision
-		checkArgs.targetRevision = target.TargetRevision
+		checkArgs.targetRevision = target.Revision
 		checkArgs.enabledCalls = enabledSyscalls
 		checkArgs.allSandboxes = true
 		r.CheckResult, err = checkMachine(checkArgs)
@@ -214,7 +214,6 @@ func main() {
 			}
 		}
 		r.CheckResult.Name = *flagName
-		r.CheckResult.EnabledCalls = enabledSyscalls
 	}
 
 	log.Logf(0, "syscalls: %v", len(r.CheckResult.EnabledCalls))
@@ -236,7 +235,7 @@ func main() {
 	}
 
 	if *flagRunTest {
-		runTest(target, manager, *flagName, config.Executor)
+		// runTest(target, manager, *flagName, config.Executor)
 		return
 	}
 
@@ -250,13 +249,13 @@ func main() {
 		gate:                     ipc.NewGate(2**flagProcs, periodicCallback),
 		workQueue:                newWorkQueue(*flagProcs, needPoll),
 		needPoll:                 needPoll,
-		manager:                  manager,
+		manager:                  nil, //manager,
 		target:                   target,
 		faultInjectionEnabled:    r.CheckResult.Features[host.FeatureFaultInjection].Enabled,
 		comparisonTracingEnabled: r.CheckResult.Features[host.FeatureComparisons].Enabled,
 		corpusHashes:             make(map[hash.Sig]struct{}),
 	}
-	for i := 0; fuzzer.poll(i == 0, nil); i++ {
+	for i := 0; fuzzer.poll(r.CheckResult); i++ {
 	}
 	calls := make(map[*prog.Syscall]bool)
 	for _, id := range r.CheckResult.EnabledCalls[sandbox] {
@@ -273,68 +272,13 @@ func main() {
 		fuzzer.procs = append(fuzzer.procs, proc)
 		go proc.loop()
 	}
-
-	fuzzer.pollLoop()
 }
 
-func (fuzzer *Fuzzer) pollLoop() {
-	var execTotal uint64
-	var lastPoll time.Time
-	var lastPrint time.Time
-	ticker := time.NewTicker(3 * time.Second).C
-	for {
-		poll := false
-		select {
-		case <-ticker:
-		case <-fuzzer.needPoll:
-			poll = true
-		}
-		if fuzzer.outputType != OutputStdout && time.Since(lastPrint) > 10*time.Second {
-			// Keep-alive for manager.
-			log.Logf(0, "alive, executed %v", execTotal)
-			lastPrint = time.Now()
-		}
-		if poll || time.Since(lastPoll) > 10*time.Second {
-			needCandidates := fuzzer.workQueue.wantCandidates()
-			if poll && !needCandidates {
-				continue
-			}
-			stats := make(map[string]uint64)
-			for _, proc := range fuzzer.procs {
-				stats["exec total"] += atomic.SwapUint64(&proc.env.StatExecs, 0)
-				stats["executor restarts"] += atomic.SwapUint64(&proc.env.StatRestarts, 0)
-			}
-			for stat := Stat(0); stat < StatCount; stat++ {
-				v := atomic.SwapUint64(&fuzzer.stats[stat], 0)
-				stats[statNames[stat]] = v
-				execTotal += v
-			}
-			if !fuzzer.poll(needCandidates, stats) {
-				lastPoll = time.Now()
-			}
-		}
-	}
-}
+func (fuzzer *Fuzzer) poll(args *rpctype.CheckArgs) bool {
+	
+	candidates := fuzzer.loadcorpus(fuzzer.cfg, args)
 
-func (fuzzer *Fuzzer) poll(needCandidates bool, stats map[string]uint64) bool {
-	a := &rpctype.PollArgs{
-		Name:           fuzzer.name,
-		NeedCandidates: needCandidates,
-		MaxSignal:      fuzzer.grabNewSignal().Serialize(),
-		Stats:          stats,
-	}
-	r := &rpctype.PollRes{}
-	if err := fuzzer.manager.Call("Manager.Poll", a, r); err != nil {
-		log.Fatalf("Manager.Poll call failed: %v", err)
-	}
-	maxSignal := r.MaxSignal.Deserialize()
-	log.Logf(1, "poll: candidates=%v inputs=%v signal=%v",
-		len(r.Candidates), len(r.NewInputs), maxSignal.Len())
-	fuzzer.addMaxSignal(maxSignal)
-	for _, inp := range r.NewInputs {
-		fuzzer.addInputFromAnotherFuzzer(inp)
-	}
-	for _, candidate := range r.Candidates {
+	for _, candidate := range Candidates {
 		p, err := fuzzer.target.Deserialize(candidate.Prog)
 		if err != nil {
 			log.Fatalf("failed to parse program from manager: %v", err)
@@ -351,7 +295,7 @@ func (fuzzer *Fuzzer) poll(needCandidates bool, stats map[string]uint64) bool {
 			flags: flags,
 		})
 	}
-	return len(r.NewInputs) != 0 || len(r.Candidates) != 0 || maxSignal.Len() != 0
+	return len(candidates) != 0 
 }
 
 func (fuzzer *Fuzzer) sendInputToManager(inp rpctype.RPCInput) {
@@ -465,4 +409,70 @@ func parseOutputType(str string) OutputType {
 		log.Fatalf("-output flag must be one of none/stdout/dmesg/file")
 		return OutputNone
 	}
+}
+
+func (fuzzer *Fuzzer) loadcorpus(cfg *mgrconfig.Config, args *rpctype.CheckArgs) *[]rpctype.RPCCandidate {
+	log.Logf(0, "loading corpus...")
+	corpusDB, err = db.Open(filepath.Join(cfg.Workdir, "corpus.db"))
+	if err != nil {
+		log.Fatalf("failed to open corpus database: %v", err)
+	}
+
+	candidates = make([]rpctype.RPCCandidate, 0)
+	// By default we don't re-minimize/re-smash programs from corpus,
+	// it takes lots of time on start and is unnecessary.
+	// However, on version bumps we can selectively re-minimize/re-smash.
+	minimized, smashed := true, true
+	switch corpusDB.Version {
+	case 0:
+		// Version 0 had broken minimization, so we need to re-minimize.
+		minimized = false
+		fallthrough
+	case 1:
+		// Version 1->2: memory is preallocated so lots of mmaps become unnecessary.
+		minimized = false
+		fallthrough
+	case 2:
+		// Version 2->3: big-endian hints.
+		smashed = false
+		fallthrough
+	case currentDBVersion:
+	}
+	syscalls := make(map[int]bool)
+	for _, id := range args.EnabledCalls[mgr.cfg.Sandbox] {
+		syscalls[id] = true
+	}
+	deleted := 0
+	for key, rec := range corpusDB.Records {
+		p, err := fuzzer.target.Deserialize(rec.Val)
+		if err != nil {
+			if deleted < 10 {
+				log.Logf(0, "deleting broken program: %v\n%s", err, rec.Val)
+			}
+			corpusDB.Delete(key)
+			deleted++
+			continue
+		}
+		disabled := false
+		for _, c := range p.Calls {
+			if !syscalls[c.Meta.ID] {
+				disabled = true
+				break
+			}
+		}
+		if disabled {
+			// This program contains a disabled syscall.
+			// We won't execute it, but remember its hash so
+			// it is not deleted during minimization.
+			// mgr.disabledHashes[hash.String(rec.Val)] = struct{}{}
+			continue
+		}
+		mgr.candidates = append(mgr.candidates, rpctype.RPCCandidate{
+			Prog:      rec.Val,
+			Minimized: minimized,
+			Smashed:   smashed,
+		})
+	}
+	log.Logf(0, "%-24v: %v (%v deleted)", "corpus", len(candidates), deleted)
+	return &candidates
 }
