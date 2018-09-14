@@ -15,13 +15,14 @@ import (
 	_ "time"
 	"path/filepath"
 
+	"github.com/google/syzkaller/pkg/db"
 	"github.com/google/syzkaller/pkg/hash"
 	"github.com/google/syzkaller/pkg/host"
 	"github.com/google/syzkaller/pkg/ipc"
 	"github.com/google/syzkaller/pkg/ipc/ipcconfig"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
-	_ "github.com/google/syzkaller/pkg/rpctype"
+	"github.com/google/syzkaller/pkg/rpctype"
 	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
 	"github.com/google/syzkaller/sys"
@@ -425,6 +426,8 @@ func parseOutputType(str string) OutputType {
 	}
 }
 
+const currentDBVersion = 3
+
 func (fuzzer *Fuzzer) loadcorpus(cfg *mgrconfig.Config, args *rpctype.CheckArgs) *[]rpctype.RPCCandidate {
 	log.Logf(0, "loading corpus...")
 	corpusDB, err := db.Open(filepath.Join(cfg.Workdir, "corpus.db"))
@@ -432,7 +435,7 @@ func (fuzzer *Fuzzer) loadcorpus(cfg *mgrconfig.Config, args *rpctype.CheckArgs)
 		log.Fatalf("failed to open corpus database: %v", err)
 	}
 
-	candidates = make([]rpctype.RPCCandidate, 0)
+	candidates := make([]rpctype.RPCCandidate, 0)
 	// By default we don't re-minimize/re-smash programs from corpus,
 	// it takes lots of time on start and is unnecessary.
 	// However, on version bumps we can selectively re-minimize/re-smash.
@@ -453,7 +456,7 @@ func (fuzzer *Fuzzer) loadcorpus(cfg *mgrconfig.Config, args *rpctype.CheckArgs)
 	case currentDBVersion:
 	}
 	syscalls := make(map[int]bool)
-	for _, id := range args.EnabledCalls[mgr.cfg.Sandbox] {
+	for _, id := range args.EnabledCalls[cfg.Sandbox] {
 		syscalls[id] = true
 	}
 	deleted := 0
@@ -481,7 +484,7 @@ func (fuzzer *Fuzzer) loadcorpus(cfg *mgrconfig.Config, args *rpctype.CheckArgs)
 			// mgr.disabledHashes[hash.String(rec.Val)] = struct{}{}
 			continue
 		}
-		mgr.candidates = append(mgr.candidates, rpctype.RPCCandidate{
+		candidates = append(candidates, rpctype.RPCCandidate{
 			Prog:      rec.Val,
 			Minimized: minimized,
 			Smashed:   smashed,
