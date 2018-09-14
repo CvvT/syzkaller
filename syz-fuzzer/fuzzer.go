@@ -244,6 +244,7 @@ func main() {
 	needPoll := make(chan struct{}, 1)
 	needPoll <- struct{}{}
 	fuzzer := &Fuzzer{
+		cfg: 					  cfg,
 		name:                     *flagName,
 		outputType:               outputType,
 		config:                   config,
@@ -273,6 +274,17 @@ func main() {
 		}
 		fuzzer.procs = append(fuzzer.procs, proc)
 		go proc.loop()
+	}
+
+	fuzzer.pollLoop()
+}
+
+func (fuzzer *Fuzzer) pollLoop() {
+	ticker := time.NewTicker(3 * time.Second).C
+	for {
+		select {
+			<-ticker:
+		}
 	}
 }
 

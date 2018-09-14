@@ -1,11 +1,11 @@
 # -manager=10.0.2.10:39311
-./bin/linux_amd64/syz-fuzzer -executor=./bin/syz-executor \
+./bin/linux_amd64/syz-fuzzer -executor=./bin/linux_amd64/syz-executor \
     -name=vm-0 \
     -arch=amd64 \
-    -sandbox=namespace \
+    -sandbox=none \
     -procs=1 \
     -v=100 \
-    -cover=true \
+    -cover=false \
     -debug=false \
     -test=false \
     -runtest=false \
