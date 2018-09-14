@@ -294,6 +294,10 @@ func (fuzzer *Fuzzer) poll(args *rpctype.CheckArgs) bool {
 			p:     p,
 			flags: flags,
 		})
+
+		// Add candidates to corpus
+		sig := hash.Hash(candidate.Prog)
+		fuzzer.addInputToCorpusRaw(p, sig)
 	}
 	return len(candidates) != 0 
 }
@@ -332,6 +336,15 @@ func (fuzzer *Fuzzer) addInputToCorpus(p *prog.Prog, sign signal.Signal, sig has
 		fuzzer.maxSignal.Merge(sign)
 		fuzzer.signalMu.Unlock()
 	}
+}
+
+func (fuzzer *Fuzzer) addInputToCorpusRaw(p *prog.Prog, sig hash.Sig) {
+	fuzzer.corpusMu.Lock()
+	if _, ok := fuzzer.corpusHashes[sig]; !ok {
+		fuzzer.corpus = append(fuzzer.corpus, p)
+		fuzzer.corpusHashes[sig] = struct{}{}
+	}
+	fuzzer.corpusMu.Unlock()
 }
 
 func (fuzzer *Fuzzer) corpusSnapshot() []*prog.Prog {
