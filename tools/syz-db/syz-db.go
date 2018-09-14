@@ -12,11 +12,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/syzkaller/pkg/db"
-	"github.com/google/syzkaller/pkg/hash"
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/prog"
-	_ "github.com/google/syzkaller/sys"
+	"github.com/CvvT/syzkaller/pkg/db"
+	"github.com/CvvT/syzkaller/pkg/hash"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/prog"
+	_ "github.com/CvvT/syzkaller/sys"
 )
 
 func main() {

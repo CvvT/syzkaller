@@ -6,8 +6,8 @@
 package fuchsia
 
 import (
-	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/sys/targets"
+	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/sys/targets"
 )
 
 func InitTarget(target *prog.Target) {

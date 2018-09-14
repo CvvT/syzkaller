@@ -4,7 +4,7 @@
 package targets
 
 import (
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 // MakePosixMmap creates a "normal" posix mmap call that maps [addr, addr+size) range.

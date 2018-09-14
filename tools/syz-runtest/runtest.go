@@ -18,15 +18,15 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/syzkaller/pkg/instance"
-	"github.com/google/syzkaller/pkg/mgrconfig"
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/pkg/report"
-	"github.com/google/syzkaller/pkg/rpctype"
-	"github.com/google/syzkaller/pkg/runtest"
-	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/sys"
-	"github.com/google/syzkaller/vm"
+	"github.com/CvvT/syzkaller/pkg/instance"
+	"github.com/CvvT/syzkaller/pkg/mgrconfig"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/pkg/report"
+	"github.com/CvvT/syzkaller/pkg/rpctype"
+	"github.com/CvvT/syzkaller/pkg/runtest"
+	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/sys"
+	"github.com/CvvT/syzkaller/vm"
 )
 
 var (

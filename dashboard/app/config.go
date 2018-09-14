@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"time"
 
-	"github.com/google/syzkaller/dashboard/dashapi"
-	"github.com/google/syzkaller/pkg/email"
+	"github.com/CvvT/syzkaller/dashboard/dashapi"
+	"github.com/CvvT/syzkaller/pkg/email"
 )
 
 // There are multiple configurable aspects of the app (namespaces, reporting, API clients, etc).

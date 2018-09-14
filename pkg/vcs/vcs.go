@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/pkg/osutil"
 )
 
 type Repo interface {

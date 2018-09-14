@@ -13,9 +13,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/syzkaller/pkg/ast"
-	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/sys/targets"
+	"github.com/CvvT/syzkaller/pkg/ast"
+	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/sys/targets"
 )
 
 type ConstInfo struct {

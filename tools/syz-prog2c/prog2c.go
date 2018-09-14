@@ -10,9 +10,9 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/google/syzkaller/pkg/csource"
-	"github.com/google/syzkaller/prog"
-	_ "github.com/google/syzkaller/sys"
+	"github.com/CvvT/syzkaller/pkg/csource"
+	"github.com/CvvT/syzkaller/prog"
+	_ "github.com/CvvT/syzkaller/sys"
 )
 
 var (

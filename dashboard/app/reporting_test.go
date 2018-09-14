@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/google/syzkaller/dashboard/dashapi"
+	"github.com/CvvT/syzkaller/dashboard/dashapi"
 )
 
 func TestReportBug(t *testing.T) {

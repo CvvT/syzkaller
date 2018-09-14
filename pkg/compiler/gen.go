@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/google/syzkaller/pkg/ast"
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/pkg/ast"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 const sizeUnassigned = ^uint64(0)

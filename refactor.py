@@ -11,6 +11,6 @@ if __name__ == '__main__':
 				content = None
 				with open(real_path, "r") as f:
 					content = f.read()
-				content.replace("github.com/google/syzkaller", "github.com/CvvT/syzkaller")
+				content = content.replace("github.com/google/syzkaller", "github.com/CvvT/syzkaller")
 				with open(real_path, "w") as f:
 					f.write(content)

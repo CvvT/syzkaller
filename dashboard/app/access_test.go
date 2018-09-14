@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/google/syzkaller/dashboard/dashapi"
+	"github.com/CvvT/syzkaller/dashboard/dashapi"
 )
 
 // TestAccessConfig checks that access level were properly assigned throughout the config.

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 
-	"github.com/google/syzkaller/pkg/compiler"
+	"github.com/CvvT/syzkaller/pkg/compiler"
 )
 
 type fuchsia struct{}

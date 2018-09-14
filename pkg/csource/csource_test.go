@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/syzkaller/prog"
-	_ "github.com/google/syzkaller/sys"
+	"github.com/CvvT/syzkaller/prog"
+	_ "github.com/CvvT/syzkaller/sys"
 )
 
 func TestGenerate(t *testing.T) {

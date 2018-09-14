@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/google/syzkaller/pkg/bisect"
-	"github.com/google/syzkaller/pkg/config"
-	"github.com/google/syzkaller/pkg/mgrconfig"
+	"github.com/CvvT/syzkaller/pkg/bisect"
+	"github.com/CvvT/syzkaller/pkg/config"
+	"github.com/CvvT/syzkaller/pkg/mgrconfig"
 )
 
 var (

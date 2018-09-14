@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/syzkaller/dashboard/dashapi"
-	"github.com/google/syzkaller/pkg/email"
+	"github.com/CvvT/syzkaller/dashboard/dashapi"
+	"github.com/CvvT/syzkaller/pkg/email"
 )
 
 func TestJob(t *testing.T) {
