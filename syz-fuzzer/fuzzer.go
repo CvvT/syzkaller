@@ -12,7 +12,7 @@ import (
 	"runtime/debug"
 	"sync"
 	_ "sync/atomic"
-	_ "time"
+	"time"
 	"path/filepath"
 
 	"github.com/CvvT/syzkaller/pkg/db"
@@ -283,7 +283,7 @@ func (fuzzer *Fuzzer) pollLoop() {
 	ticker := time.NewTicker(3 * time.Second).C
 	for {
 		select {
-			<-ticker:
+		case <-ticker:
 		}
 	}
 }
