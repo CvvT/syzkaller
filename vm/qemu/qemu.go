@@ -24,7 +24,7 @@ const (
 )
 
 func init() {
-	vmimpl.Register("qemu", ctor, true)
+	vmimpl.Register("qemu", ctor)
 }
 
 type Config struct {
@@ -147,7 +147,7 @@ var linuxCmdline = []string{
 	"earlyprintk=serial",
 	"oops=panic",
 	"nmi_watchdog=panic",
-	"panic_on_warn=1",
+	// "panic_on_warn=1", // We want to collect all information
 	"panic=86400",
 	"ftrace_dump_on_oops=orig_cpu",
 	"rodata=n",

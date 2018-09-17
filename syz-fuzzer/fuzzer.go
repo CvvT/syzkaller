@@ -220,8 +220,11 @@ func main() {
 		comparisonTracingEnabled: r.CheckResult.Features[host.FeatureComparisons].Enabled,
 		corpusHashes:             make(map[hash.Sig]struct{}),
 	}
-	for i := 0; fuzzer.poll(i == 0, nil); i++ {
+	// for i := 0; fuzzer.poll(i == 0, nil); i++ {
+	// }
+	for !fuzzer.poll(true, nil) {
 	}
+
 	calls := make(map[*prog.Syscall]bool)
 	for _, id := range r.CheckResult.EnabledCalls[sandbox] {
 		calls[target.Syscalls[id]] = true
@@ -296,7 +299,16 @@ func (fuzzer *Fuzzer) poll(needCandidates bool, stats map[string]uint64) bool {
 		len(r.Candidates), len(r.NewInputs), maxSignal.Len())
 	fuzzer.addMaxSignal(maxSignal)
 	for _, inp := range r.NewInputs {
-		fuzzer.addInputFromAnotherFuzzer(inp)
+		//	fuzzer.addInputFromAnotherFuzzer(inp)
+		p, err := fuzzer.target.Deserialize(inp.Prog)
+		if err != nil {
+			log.Fatalf("failed to desrialize prog %v", err)
+		}
+		fuzzer.workQueue.enqueue(&WorkCandidate{
+			p:     p,
+			flags: ProgNormal,
+		})
+
 	}
 	for _, candidate := range r.Candidates {
 		p, err := fuzzer.target.Deserialize(candidate.Prog)
@@ -328,6 +340,16 @@ func (fuzzer *Fuzzer) sendInputToManager(inp rpctype.RPCInput) {
 	}
 }
 
+func (fuzzer *Fuzzer) sendInputToManagerRaw(inp rpctype.RPCInput) {
+	a := &rpctype.NewInputArgs{
+		Name:     fuzzer.name,
+		RPCInput: inp,
+	}
+	if err := fuzzer.manager.Call("Manager.NewInputRaw", a, nil); err != nil {
+		log.Fatalf("Nabager.NewInputRaw call failed: %v", err)
+	}
+}
+
 func (fuzzer *Fuzzer) addInputFromAnotherFuzzer(inp rpctype.RPCInput) {
 	p, err := fuzzer.target.Deserialize(inp.Prog)
 	if err != nil {
@@ -351,6 +373,18 @@ func (fuzzer *Fuzzer) addInputToCorpus(p *prog.Prog, sign signal.Signal, sig has
 		fuzzer.corpusSignal.Merge(sign)
 		fuzzer.maxSignal.Merge(sign)
 		fuzzer.signalMu.Unlock()
+	}
+}
+
+func (fuzzer *Fuzzer) addInputToCorpusRaw(p *prog.Prog) {
+	fuzzer.corpusMu.Lock()
+	defer fuzzer.corpusMu.Unlock()
+
+	data := p.Serialize()
+	sig := hash.Hash(data)
+	if _, ok := fuzzer.corpusHashes[sig]; !ok {
+		fuzzer.corpus = append(fuzzer.corpus, p)
+		fuzzer.corpusHashes[sig] = struct{}{}
 	}
 }
 

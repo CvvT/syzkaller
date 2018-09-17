@@ -64,19 +64,29 @@ func newProc(fuzzer *Fuzzer, pid int) (*Proc, error) {
 }
 
 func (proc *Proc) loop() {
-	generatePeriod := 100
-	if proc.fuzzer.config.Flags&ipc.FlagSignal == 0 {
-		// If we don't have real coverage signal, generate programs more frequently
-		// because fallback signal is weak.
-		generatePeriod = 2
-	}
+	// generatePeriod := 100
+	// if proc.fuzzer.config.Flags&ipc.FlagSignal == 0 {
+	// If we don't have real coverage signal, generate programs more frequently
+	// because fallback signal is weak.
+	//	generatePeriod = 2
+	// }
 	for i := 0; ; i++ {
 		item := proc.fuzzer.workQueue.dequeue()
 		if item != nil {
 			switch item := item.(type) {
 			case *WorkTriage:
-				proc.triageInput(item)
+				// We don't need it (We ignore normal cases)
+				// proc.triageInput(item)
 			case *WorkCandidate:
+				// Add mutated program to manager before we execute the original one
+				p := item.p.Clone()
+				p.Mutate(proc.rnd, programLength, proc.fuzzer.choiceTable, proc.fuzzer.corpusSnapshot())
+				proc.fuzzer.sendInputToManagerRaw(rpctype.RPCInput{
+					Call:   "",
+					Prog:   p.Serialize(),
+					Signal: signal.Serial{},
+					Cover:  []uint32{0},
+				})
 				proc.execute(proc.execOpts, item.p, item.flags, StatCandidate)
 			case *WorkSmash:
 				proc.smashInput(item)
@@ -86,20 +96,26 @@ func (proc *Proc) loop() {
 			continue
 		}
 
-		ct := proc.fuzzer.choiceTable
-		corpus := proc.fuzzer.corpusSnapshot()
-		if len(corpus) == 0 || i%generatePeriod == 0 {
-			// Generate a new prog.
-			p := proc.fuzzer.target.Generate(proc.rnd, programLength, ct)
-			log.Logf(1, "#%v: generated", proc.pid)
-			proc.execute(proc.execOpts, p, ProgNormal, StatGenerate)
-		} else {
-			// Mutate an existing prog.
-			p := corpus[proc.rnd.Intn(len(corpus))].Clone()
-			p.Mutate(proc.rnd, programLength, ct, corpus)
-			log.Logf(1, "#%v: mutated", proc.pid)
-			proc.execute(proc.execOpts, p, ProgNormal, StatFuzz)
-		}
+		//Since we change to not panic on warning, we don't want to fetch next candidate in case manager is still dealing with generated log for a while
+		// monitor.waitForOutput set a 10s timeout
+		// we should set a larger sleep time
+		time.Sleep(15 * time.Second)
+		// ct := proc.fuzzer.choiceTable
+		// corpus := proc.fuzzer.corpusSnapshot()
+		// if len(corpus) != 0 {
+		// if len(corpus) == 0 || i%generatePeriod == 0 {
+		//  	// Generate a new prog.
+		//  	p := proc.fuzzer.target.Generate(proc.rnd, programLength, ct)
+		//  	log.Logf(1, "#%v: generated", proc.pid)
+		//  	proc.execute(proc.execOpts, p, ProgNormal, StatGenerate)
+		// } else {
+		// Mutate an existing prog.
+		// log.Logf(0, "Corpus: %v", corpus)
+		//p := corpus[proc.rnd.Intn(len(corpus))].Clone()
+		//p.Mutate(proc.rnd, programLength, ct, corpus)
+		//log.Logf(0, "#%v: mutated\n%v", proc.pid, p.Serialize())
+		// proc.execute(proc.execOpts, p, ProgNormal, StatFuzz)
+		// }
 	}
 }
 

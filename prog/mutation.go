@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"math/rand"
 	"unsafe"
+
+	"github.com/google/syzkaller/pkg/log"
 )
 
 const maxBlobLen = uint64(100 << 10)
@@ -20,21 +22,24 @@ func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, corpus []*Pro
 		ct:     ct,
 		corpus: corpus,
 	}
-	for stop, ok := false, false; !stop; stop = ok && r.oneOf(3) {
-		switch {
-		case r.oneOf(5):
-			// Not all calls have anything squashable,
-			// so this has lower priority in reality.
-			ok = ctx.squashAny()
-		case r.nOutOf(1, 100):
-			ok = ctx.splice()
-		case r.nOutOf(20, 31):
-			ok = ctx.insertCall()
-		case r.nOutOf(10, 11):
-			ok = ctx.mutateArg()
-		default:
-			ok = ctx.removeCall()
-		}
+	for stop, ok, iter := false, false, 0; !stop && iter < 10; stop, iter = ok, iter+1 {
+		// We want only one mutation in place
+		// && r.oneOf(3) {
+		//switch {
+		// case r.oneOf(5):
+		// Not all calls have anything squashable,
+		// so this has lower priority in reality.
+		//  	ok = ctx.squashAny()
+		// case r.nOutOf(1, 100):
+		// 	ok = ctx.splice()
+		// case r.nOutOf(20, 31):
+		//	ok = ctx.insertCall()
+		// case r.nOutOf(10, 11):
+		//	ok = ctx.mutateArg()
+		// default:
+		// 	ok = ctx.removeCall()
+		// }
+		ok = ctx.mutateArg()
 	}
 	for _, c := range p.Calls {
 		p.Target.SanitizeCall(c)
@@ -130,18 +135,23 @@ func (ctx *mutator) removeCall() bool {
 	return true
 }
 
+// Return true we successfully mutate one Arg
 func (ctx *mutator) mutateArg() bool {
 	p, r := ctx.p, ctx.r
 	if len(p.Calls) == 0 {
 		return false
 	}
 	c := p.Calls[r.Intn(len(p.Calls))]
+	log.Logf(0, "Mutate Call: %s", c)
 	if len(c.Args) == 0 {
 		return false
 	}
 	s := analyze(ctx.ct, p, c)
 	updateSizes := true
-	for stop, ok := false, false; !stop; stop = ok && r.oneOf(3) {
+	ok := false
+	for stop, iter := false, 0; !stop && iter < 10; stop, iter = ok, iter+1 {
+		// We want only one mutation
+		// && r.oneOf(3) {
 		ok = true
 		ma := &mutationArgs{target: p.Target}
 		ForeachArg(c, ma.collectArg)
@@ -155,13 +165,14 @@ func (ctx *mutator) mutateArg() bool {
 			ok = false
 			continue
 		}
+		log.Logf(0, "Mutate %d Type:, %v %v %v", idx, arg.Type(), arg, ctx)
 		p.insertBefore(c, calls)
 		if updateSizes {
 			p.Target.assignSizesCall(c)
 		}
 		p.Target.SanitizeCall(c)
 	}
-	return true
+	return ok
 }
 
 func (target *Target) mutateArg(r *randGen, s *state, arg Arg, ctx ArgCtx, updateSizes *bool) ([]*Call, bool) {
@@ -215,7 +226,9 @@ func (t *IntType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Ca
 }
 
 func (t *FlagsType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
-	return mutateInt(r, s, arg)
+	// Do not mutate flags
+	return nil, true, false
+	// return mutateInt(r, s, arg)
 }
 
 func (t *LenType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
@@ -228,7 +241,9 @@ func (t *LenType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Ca
 }
 
 func (t *ResourceType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
-	return regenerate(r, s, arg)
+	// We don't need to regenerate resource
+	return nil, true, false
+	// return regenerate(r, s, arg)
 }
 
 func (t *VmaType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
@@ -273,6 +288,7 @@ func (t *BufferType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []
 
 func (t *ArrayType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
 	// TODO: swap elements of the array
+	log.Logf(0, "Mutate ArrayType")
 	a := arg.(*GroupArg)
 	count := uint64(0)
 	switch t.Kind {
@@ -307,14 +323,9 @@ func (t *ArrayType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*
 }
 
 func (t *PtrType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
+	//TODO: mutate it
+	log.Logf(0, "Mutate ptrArg")
 	a := arg.(*PointerArg)
-	if r.oneOf(1000) {
-		removeArg(a.Res)
-		index := r.rand(len(r.target.SpecialPointers))
-		newArg := MakeSpecialPointerArg(t, index)
-		replaceArg(arg, newArg)
-		return
-	}
 	newArg := r.allocAddr(s, t, a.Res.Size(), a.Res)
 	replaceArg(arg, newArg)
 	return
@@ -325,6 +336,7 @@ func (t *StructType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []
 	if gen == nil {
 		panic("bad arg returned by mutationArgs: StructType")
 	}
+	log.Logf(0, "Mutate structType")
 	var newArg Arg
 	newArg, calls = gen(&Gen{r, s}, t, arg)
 	a := arg.(*GroupArg)
@@ -335,6 +347,9 @@ func (t *StructType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []
 }
 
 func (t *UnionType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
+	log.Logf(0, "Mutate unionType")
+	// We don't want to change the type of any argument
+	return nil, true, false
 	if gen := r.target.SpecialTypes[t.Name()]; gen != nil {
 		var newArg Arg
 		newArg, calls = gen(&Gen{r, s}, t, arg)
@@ -382,6 +397,7 @@ type mutationArgs struct {
 func (ma *mutationArgs) collectArg(arg Arg, ctx *ArgCtx) {
 	ignoreSpecial := ma.ignoreSpecial
 	ma.ignoreSpecial = false
+	log.Logf(0, "Collect: %v", arg.Type())
 	switch typ := arg.Type().(type) {
 	case *StructType:
 		if ma.target.SpecialTypes[typ.Name()] == nil || ignoreSpecial {
@@ -408,7 +424,7 @@ func (ma *mutationArgs) collectArg(arg Arg, ctx *ArgCtx) {
 			return // string const
 		}
 	case *PtrType:
-		if arg.(*PointerArg).IsSpecial() {
+		if arg.(*PointerArg).IsNull() {
 			// TODO: we ought to mutate this, but we don't have code for this yet.
 			return
 		}

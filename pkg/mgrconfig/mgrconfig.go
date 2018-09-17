@@ -176,7 +176,7 @@ func Complete(cfg *Config) error {
 		return fmt.Errorf("bad config param procs: '%v', want [1, 32]", cfg.Procs)
 	}
 	switch cfg.Sandbox {
-	case "none", "setuid", "namespace":
+	case "none", "setuid", "namespace", "namespace_custom":
 	default:
 		return fmt.Errorf("config param sandbox must contain one of none/setuid/namespace")
 	}
