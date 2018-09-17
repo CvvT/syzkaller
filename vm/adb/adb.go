@@ -17,10 +17,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/syzkaller/pkg/config"
-	"github.com/google/syzkaller/pkg/log"
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/vm/vmimpl"
+	"github.com/CvvT/syzkaller/pkg/config"
+	"github.com/CvvT/syzkaller/pkg/log"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/vm/vmimpl"
 )
 
 func init() {

@@ -4,7 +4,7 @@
 package host
 
 import (
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 func isSupported(c *prog.Syscall, sandbox string) (bool, string) {

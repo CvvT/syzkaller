@@ -6,12 +6,12 @@ package main
 import (
 	"time"
 
-	"github.com/google/syzkaller/pkg/hash"
-	"github.com/google/syzkaller/pkg/log"
-	"github.com/google/syzkaller/pkg/mgrconfig"
-	"github.com/google/syzkaller/pkg/report"
-	"github.com/google/syzkaller/pkg/rpctype"
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/pkg/hash"
+	"github.com/CvvT/syzkaller/pkg/log"
+	"github.com/CvvT/syzkaller/pkg/mgrconfig"
+	"github.com/CvvT/syzkaller/pkg/report"
+	"github.com/CvvT/syzkaller/pkg/rpctype"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 func (mgr *Manager) hubSyncLoop() {

@@ -15,8 +15,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/syzkaller/pkg/mgrconfig"
-	"github.com/google/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/pkg/mgrconfig"
+	"github.com/CvvT/syzkaller/pkg/osutil"
 )
 
 var flagUpdate = flag.Bool("update", false, "update test files accordingly to current results")

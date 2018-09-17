@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/google/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/pkg/osutil"
 )
 
 type fuchsia struct {

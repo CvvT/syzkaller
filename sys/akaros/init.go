@@ -4,8 +4,8 @@
 package akaros
 
 import (
-	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/sys/targets"
+	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/sys/targets"
 )
 
 type arch struct {

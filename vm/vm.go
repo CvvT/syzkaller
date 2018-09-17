@@ -14,21 +14,21 @@ import (
 	"os"
 	"time"
 
-	"github.com/google/syzkaller/pkg/log"
-	"github.com/google/syzkaller/pkg/mgrconfig"
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/pkg/report"
-	"github.com/google/syzkaller/vm/vmimpl"
+	"github.com/CvvT/syzkaller/pkg/log"
+	"github.com/CvvT/syzkaller/pkg/mgrconfig"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/pkg/report"
+	"github.com/CvvT/syzkaller/vm/vmimpl"
 
 	// Import all VM implementations, so that users only need to import vm.
-	_ "github.com/google/syzkaller/vm/adb"
-	_ "github.com/google/syzkaller/vm/gce"
-	_ "github.com/google/syzkaller/vm/gvisor"
-	_ "github.com/google/syzkaller/vm/isolated"
-	_ "github.com/google/syzkaller/vm/kvm"
-	_ "github.com/google/syzkaller/vm/odroid"
-	_ "github.com/google/syzkaller/vm/qemu"
-	_ "github.com/google/syzkaller/vm/vmm"
+	_ "github.com/CvvT/syzkaller/vm/adb"
+	_ "github.com/CvvT/syzkaller/vm/gce"
+	_ "github.com/CvvT/syzkaller/vm/gvisor"
+	_ "github.com/CvvT/syzkaller/vm/isolated"
+	_ "github.com/CvvT/syzkaller/vm/kvm"
+	_ "github.com/CvvT/syzkaller/vm/odroid"
+	_ "github.com/CvvT/syzkaller/vm/qemu"
+	_ "github.com/CvvT/syzkaller/vm/vmm"
 )
 
 type Pool struct {

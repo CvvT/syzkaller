@@ -15,8 +15,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 // Configuration flags for Config.Flags.

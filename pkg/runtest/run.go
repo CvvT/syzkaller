@@ -23,12 +23,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/syzkaller/pkg/csource"
-	"github.com/google/syzkaller/pkg/host"
-	"github.com/google/syzkaller/pkg/ipc"
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/sys/targets"
+	"github.com/CvvT/syzkaller/pkg/csource"
+	"github.com/CvvT/syzkaller/pkg/host"
+	"github.com/CvvT/syzkaller/pkg/ipc"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/sys/targets"
 )
 
 type RunRequest struct {

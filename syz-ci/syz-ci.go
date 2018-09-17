@@ -59,10 +59,10 @@ import (
 	"os"
 	"sync"
 
-	"github.com/google/syzkaller/pkg/config"
-	"github.com/google/syzkaller/pkg/log"
-	"github.com/google/syzkaller/pkg/mgrconfig"
-	"github.com/google/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/pkg/config"
+	"github.com/CvvT/syzkaller/pkg/log"
+	"github.com/CvvT/syzkaller/pkg/mgrconfig"
+	"github.com/CvvT/syzkaller/pkg/osutil"
 )
 
 var flagConfig = flag.String("config", "", "config file")
@@ -166,7 +166,7 @@ func main() {
 
 func loadConfig(filename string) (*Config, error) {
 	cfg := &Config{
-		SyzkallerRepo:   "https://github.com/google/syzkaller.git",
+		SyzkallerRepo:   "https://github.com/CvvT/syzkaller.git",
 		SyzkallerBranch: "master",
 		Goroot:          os.Getenv("GOROOT"),
 	}

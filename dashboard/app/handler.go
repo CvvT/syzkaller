@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/google/syzkaller/dashboard/dashapi"
+	"github.com/CvvT/syzkaller/dashboard/dashapi"
 	"golang.org/x/net/context"
 	"google.golang.org/appengine"
 	"google.golang.org/appengine/log"

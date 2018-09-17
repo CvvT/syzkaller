@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/syzkaller/pkg/csource"
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/pkg/csource"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 func initTest(t *testing.T) (*rand.Rand, int) {

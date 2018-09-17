@@ -9,14 +9,14 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/google/syzkaller/pkg/csource"
-	"github.com/google/syzkaller/pkg/log"
-	"github.com/google/syzkaller/pkg/mgrconfig"
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/pkg/report"
-	"github.com/google/syzkaller/pkg/repro"
-	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/vm"
+	"github.com/CvvT/syzkaller/pkg/csource"
+	"github.com/CvvT/syzkaller/pkg/log"
+	"github.com/CvvT/syzkaller/pkg/mgrconfig"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/pkg/report"
+	"github.com/CvvT/syzkaller/pkg/repro"
+	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/vm"
 )
 
 var (

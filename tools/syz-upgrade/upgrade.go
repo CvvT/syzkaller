@@ -17,9 +17,9 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/prog"
-	_ "github.com/google/syzkaller/sys"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/prog"
+	_ "github.com/CvvT/syzkaller/sys"
 )
 
 func main() {

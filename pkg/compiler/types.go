@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/google/syzkaller/pkg/ast"
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/pkg/ast"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 // typeDesc is arg/field type descriptor.

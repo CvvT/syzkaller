@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/syzkaller/dashboard/dashapi"
+	"github.com/CvvT/syzkaller/dashboard/dashapi"
 )
 
 func TestReportBug(t *testing.T) {

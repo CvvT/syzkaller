@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/syzkaller/pkg/email"
+	"github.com/CvvT/syzkaller/pkg/email"
 )
 
 func TestEmailReport(t *testing.T) {

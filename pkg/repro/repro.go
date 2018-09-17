@@ -11,14 +11,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/syzkaller/pkg/csource"
-	instancePkg "github.com/google/syzkaller/pkg/instance"
-	"github.com/google/syzkaller/pkg/log"
-	"github.com/google/syzkaller/pkg/mgrconfig"
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/pkg/report"
-	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/vm"
+	"github.com/CvvT/syzkaller/pkg/csource"
+	instancePkg "github.com/CvvT/syzkaller/pkg/instance"
+	"github.com/CvvT/syzkaller/pkg/log"
+	"github.com/CvvT/syzkaller/pkg/mgrconfig"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/pkg/report"
+	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/vm"
 )
 
 type Result struct {

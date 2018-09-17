@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/google/syzkaller/pkg/ast"
-	"github.com/google/syzkaller/pkg/serializer"
-	"github.com/google/syzkaller/sys/targets"
+	"github.com/CvvT/syzkaller/pkg/ast"
+	"github.com/CvvT/syzkaller/pkg/serializer"
+	"github.com/CvvT/syzkaller/sys/targets"
 )
 
 var flagUpdate = flag.Bool("update", false, "reformat all.txt")

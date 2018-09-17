@@ -7,9 +7,9 @@ import (
 	"flag"
 	"fmt"
 
-	"github.com/google/syzkaller/pkg/ipc"
-	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/sys/targets"
+	"github.com/CvvT/syzkaller/pkg/ipc"
+	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/sys/targets"
 )
 
 var (

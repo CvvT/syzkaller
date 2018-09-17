@@ -17,10 +17,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/syzkaller/pkg/cover"
-	"github.com/google/syzkaller/pkg/hash"
-	"github.com/google/syzkaller/pkg/osutil"
-	"github.com/google/syzkaller/pkg/symbolizer"
+	"github.com/CvvT/syzkaller/pkg/cover"
+	"github.com/CvvT/syzkaller/pkg/hash"
+	"github.com/CvvT/syzkaller/pkg/osutil"
+	"github.com/CvvT/syzkaller/pkg/symbolizer"
 )
 
 type symbol struct {
