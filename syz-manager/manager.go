@@ -190,6 +190,7 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, syscalls map[int]boo
 	if err != nil {
 		log.Fatalf("failed to open corpus database: %v", err)
 	}
+	log.Logf(0, "Corpus size: %v", len(mgr.corpusDB.Records))
 
 	// Create HTTP server.
 	mgr.initHTTP()
@@ -497,6 +498,7 @@ func (mgr *Manager) loadCorpus() {
 			mgr.disabledHashes[hash.String(rec.Val)] = struct{}{}
 			continue
 		}
+		log.Logf(0, "Load program: %s", rec.Val)
 		mgr.candidates = append(mgr.candidates, rpctype.RPCCandidate{
 			Prog:      rec.Val,
 			Minimized: minimized,
@@ -886,7 +888,7 @@ func (mgr *Manager) minimizeCorpus() {
 }
 
 func (mgr *Manager) Connect(a *rpctype.ConnectArgs, r *rpctype.ConnectRes) error {
-	log.Logf(1, "fuzzer %v connected", a.Name)
+	log.Logf(0, "fuzzer %v connected %v", a.Name, len(mgr.corpus))
 	mgr.stats.vmRestarts.inc()
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
@@ -894,13 +896,21 @@ func (mgr *Manager) Connect(a *rpctype.ConnectArgs, r *rpctype.ConnectRes) error
 	f := &Fuzzer{
 		name: a.Name,
 	}
+	oldf := mgr.fuzzers[a.Name]
 	mgr.fuzzers[a.Name] = f
 	mgr.minimizeCorpus()
 	f.newMaxSignal = mgr.maxSignal.Copy()
 	f.inputs = make([]rpctype.RPCInput, 0, len(mgr.corpus))
-	for _, inp := range mgr.corpus {
-		f.inputs = append(f.inputs, inp)
+	log.Logf(0, "Connect: size %v", len(mgr.corpus))
+	// for _, inp := range mgr.corpus {
+	//	f.inputs = append(f.inputs, inp)
+	// }
+	if oldf != nil {
+		for _, inp := range oldf.inputs {
+			f.inputs = append(f.inputs, inp)
+		}
 	}
+	log.Logf(0, "Connect: size2 %v", len(f.inputs))
 	r.EnabledCalls = mgr.enabledSyscalls
 	r.CheckResult = mgr.checkResult
 	r.GitRevision = sys.GitRevision
@@ -978,10 +988,10 @@ func (mgr *Manager) NewInput(a *rpctype.NewInputArgs, r *int) error {
 		mgr.corpus[sig] = inp
 	} else {
 		mgr.corpus[sig] = a.RPCInput
-		mgr.corpusDB.Save(sig, a.RPCInput.Prog, 0)
-		if err := mgr.corpusDB.Flush(); err != nil {
-			log.Logf(0, "failed to save corpus database: %v", err)
-		}
+		// mgr.corpusDB.Save(sig, a.RPCInput.Prog, 0)
+		// if err := mgr.corpusDB.Flush(); err != nil {
+		//	log.Logf(0, "failed to save corpus database: %v", err)
+		// }
 		for _, f1 := range mgr.fuzzers {
 			if f1 == f {
 				continue
@@ -991,6 +1001,39 @@ func (mgr *Manager) NewInput(a *rpctype.NewInputArgs, r *int) error {
 			f1.inputs = append(f1.inputs, inp)
 		}
 	}
+	return nil
+}
+
+// Similar to the function NewInput *Except* that we do not have signal (including coverage info and etc.)
+// and we add this input into the repository of the same fuzzer (in case we only have one instance)
+func (mgr *Manager) NewInputRaw(a *rpctype.NewInputArgs, r *int) error {
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+
+	f := mgr.fuzzers[a.Name]
+	if f == nil {
+		log.Fatalf("fuzzer %v is not connected", a.Name)
+	}
+
+	if _, err := mgr.target.Deserialize(a.RPCInput.Prog); err != nil {
+		// This should not happen, but we see such cases episodically, reason unknown.
+		log.Logf(0, "failed to deserialize program from fuzzer: %v\n%s", err, a.RPCInput.Prog)
+		return nil
+	}
+
+	mgr.stats.newInputs.inc()
+	sig := hash.String(a.RPCInput.Prog)
+	if inp, ok := mgr.corpus[sig]; ok {
+		//ignore duplicate cases???
+		log.Logf(0, "%v Dup input: %s", a.Name, inp.Prog)
+		f.inputs = append(f.inputs, inp)
+	} else {
+		inp := a.RPCInput
+		log.Logf(0, "%v New input: %s", a.Name, inp.Prog)
+		mgr.corpus[sig] = inp
+		f.inputs = append(f.inputs, inp)
+	}
+	log.Logf(0, "%v New input size: %v %v", a.Name, len(f.inputs), len(mgr.corpus))
 	return nil
 }
 
@@ -1022,7 +1065,7 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 		}
 	}
 	r.MaxSignal = f.newMaxSignal.Split(500).Serialize()
-	maxInputs := 5
+	maxInputs := 1
 	if maxInputs < mgr.cfg.Procs {
 		maxInputs = mgr.cfg.Procs
 	}
@@ -1034,10 +1077,12 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 			mgr.candidates = mgr.candidates[:last]
 		}
 	}
+	log.Logf(0, "+++++++++++++++++++++++++%v: Input size: %v++++++++++++++", a.Name, len(f.inputs))
 	if len(r.Candidates) == 0 {
 		for i := 0; i < maxInputs && len(f.inputs) > 0; i++ {
 			last := len(f.inputs) - 1
 			r.NewInputs = append(r.NewInputs, f.inputs[last])
+			log.Logf(0, "Load one Newinput %v", f.inputs[last])
 			f.inputs[last] = rpctype.RPCInput{}
 			f.inputs = f.inputs[:last]
 		}

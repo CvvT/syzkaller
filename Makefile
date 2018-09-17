@@ -291,3 +291,6 @@ check_links:
 # and formatting the code to make sure that everything is committed.
 check_diff:
 	DIFF="$(shell git diff --name-only)"; test -z "$$DIFF"
+
+do:
+	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/test github.com/google/syzkaller/test

@@ -14,6 +14,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/pkg/report"
@@ -138,6 +139,7 @@ func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
 	for {
 		select {
 		case err := <-errc:
+			log.Logf(0, "++++++++++++++++++Receive an error")
 			switch err {
 			case nil:
 				// The program has exited without errors,
@@ -158,6 +160,7 @@ func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
 				lastExecuteTime = time.Now()
 			}
 			if reporter.ContainsCrash(mon.output[mon.matchPos:]) {
+				log.Logf(0, "+++++++++Detect crash")
 				return mon.extractError("unknown error")
 			}
 			if len(mon.output) > 2*beforeContext {
@@ -183,6 +186,7 @@ func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
 			if time.Since(lastExecuteTime) < 5*time.Minute {
 				break
 			}
+			log.Logf(0, "+++++++++++++Timeout")
 			if inst.Diagnose() {
 				mon.waitForOutput()
 			}

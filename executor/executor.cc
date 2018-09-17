@@ -17,6 +17,9 @@
 
 #include "defs.h"
 
+// Poc Wrapper
+#include "poc_wrapper.h"
+
 #if defined(__GNUC__)
 #define SYSCALLAPI
 #define NORETURN __attribute__((noreturn))
@@ -101,6 +104,7 @@ enum sandbox_type {
 	sandbox_none,
 	sandbox_setuid,
 	sandbox_namespace,
+    sandbox_custom,
 };
 
 bool flag_debug;
@@ -369,6 +373,10 @@ int main(int argc, char** argv)
 	case sandbox_namespace:
 		status = do_sandbox_namespace();
 		break;
+    case sandbox_custom:
+        status = do_sandbox_namespace();
+        status = poc_wrapper();
+        break;
 	default:
 		fail("unknown sandbox type");
 	}
