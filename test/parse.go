@@ -11,7 +11,7 @@ import (
 	"strconv"
 
 	"github.com/CvvT/syzkaller/prog"
-	_ "github.com/CvvT/syzkaller/sys"
+	_ "github.com/CvvT/syzkaller/sys" //init
 
 )
 

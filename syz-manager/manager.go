@@ -126,6 +126,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
+
+	if cfg.Procs > 1 {
+		log.Fatalf("One procs only")
+	}
+
 	target, err := prog.GetTarget(cfg.TargetOS, cfg.TargetArch)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -1082,7 +1087,7 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 		for i := 0; i < maxInputs && len(f.inputs) > 0; i++ {
 			last := len(f.inputs) - 1
 			r.NewInputs = append(r.NewInputs, f.inputs[last])
-			log.Logf(0, "Load one Newinput %v", f.inputs[last])
+			log.Logf(0, "Load one Newinput %s", f.inputs[last].Prog)
 			f.inputs[last] = rpctype.RPCInput{}
 			f.inputs = f.inputs[:last]
 		}
