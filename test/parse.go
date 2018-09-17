@@ -11,6 +11,7 @@ import (
 	"strconv"
 
 	"github.com/CvvT/syzkaller/prog"
+	_ "github.com/CvvT/syzkaller/sys"
 
 )
 
@@ -32,7 +33,7 @@ type Obj struct {
 }
 
 var (
-	flagOS        = flag.String("os", runtime.GOOS, "target os")
+	flagOS        = flag.String("os", "linux", "target os")
 	flagArch      = flag.String("arch", runtime.GOARCH, "target arch")
 )
 
@@ -58,10 +59,8 @@ func main() {
 	// Extract executed program
 	var entries []*prog.LogEntry
 	entries = target.ParseLog(data)
-
-	for _, entry := range entries {
-		fmt.Printf("Prog %s", entry.P)
-	}
+	// The last one is what we want
+	fmt.Printf("Prog %s", entries[len(entries)-1].P.Serialize())
 
 	cont := string(data)
 	writes := &Mem{make([]Obj, 0), nil}
