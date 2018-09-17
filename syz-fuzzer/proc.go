@@ -13,13 +13,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/google/syzkaller/pkg/cover"
-	"github.com/google/syzkaller/pkg/hash"
-	"github.com/google/syzkaller/pkg/ipc"
-	"github.com/google/syzkaller/pkg/log"
-	"github.com/google/syzkaller/pkg/rpctype"
-	"github.com/google/syzkaller/pkg/signal"
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/pkg/cover"
+	"github.com/CvvT/syzkaller/pkg/hash"
+	"github.com/CvvT/syzkaller/pkg/ipc"
+	"github.com/CvvT/syzkaller/pkg/log"
+	"github.com/CvvT/syzkaller/pkg/rpctype"
+	"github.com/CvvT/syzkaller/pkg/signal"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 const (

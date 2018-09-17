@@ -10,8 +10,8 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/google/syzkaller/pkg/ast"
-	"github.com/google/syzkaller/sys/targets"
+	"github.com/CvvT/syzkaller/pkg/ast"
+	"github.com/CvvT/syzkaller/sys/targets"
 )
 
 func TestExtractConsts(t *testing.T) {

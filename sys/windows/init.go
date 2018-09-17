@@ -4,7 +4,7 @@
 package windows
 
 import (
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 func InitTarget(target *prog.Target) {

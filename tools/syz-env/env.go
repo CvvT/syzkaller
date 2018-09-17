@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/syzkaller/sys/targets"
+	"github.com/CvvT/syzkaller/sys/targets"
 )
 
 func main() {

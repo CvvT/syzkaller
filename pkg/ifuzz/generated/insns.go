@@ -2,7 +2,7 @@
 
 package ifuzz
 
-import . "github.com/google/syzkaller/pkg/ifuzz"
+import . "github.com/CvvT/syzkaller/pkg/ifuzz"
 
 func init() { Insns = insns }
 

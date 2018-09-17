@@ -8,7 +8,7 @@ import (
 	"math/rand"
 	"unsafe"
 
-	"github.com/google/syzkaller/pkg/log"
+	"github.com/CvvT/syzkaller/pkg/log"
 )
 
 const maxBlobLen = uint64(100 << 10)

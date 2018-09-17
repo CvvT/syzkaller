@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/google/syzkaller/pkg/symbolizer"
+	"github.com/CvvT/syzkaller/pkg/symbolizer"
 	"github.com/ianlancetaylor/demangle"
 )
 

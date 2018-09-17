@@ -6,9 +6,9 @@
 package rpctype
 
 import (
-	"github.com/google/syzkaller/pkg/host"
-	"github.com/google/syzkaller/pkg/ipc"
-	"github.com/google/syzkaller/pkg/signal"
+	"github.com/CvvT/syzkaller/pkg/host"
+	"github.com/CvvT/syzkaller/pkg/ipc"
+	"github.com/CvvT/syzkaller/pkg/signal"
 )
 
 type RPCInput struct {

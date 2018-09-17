@@ -6,7 +6,7 @@
 package compiler
 
 import (
-	"github.com/google/syzkaller/pkg/ast"
+	"github.com/CvvT/syzkaller/pkg/ast"
 )
 
 func Fuzz(data []byte) int {

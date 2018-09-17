@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/google/syzkaller/prog"
+	"github.com/CvvT/syzkaller/prog"
 )
 
 func TestSupportedSyscalls(t *testing.T) {

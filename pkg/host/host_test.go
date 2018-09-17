@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/google/syzkaller/prog"
-	_ "github.com/google/syzkaller/sys"
+	"github.com/CvvT/syzkaller/prog"
+	_ "github.com/CvvT/syzkaller/sys"
 )
 
 func TestDetectSupportedSyscalls(t *testing.T) {

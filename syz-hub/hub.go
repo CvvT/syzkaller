@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/google/syzkaller/pkg/config"
-	"github.com/google/syzkaller/pkg/log"
-	"github.com/google/syzkaller/pkg/rpctype"
-	"github.com/google/syzkaller/syz-hub/state"
+	"github.com/CvvT/syzkaller/pkg/config"
+	"github.com/CvvT/syzkaller/pkg/log"
+	"github.com/CvvT/syzkaller/pkg/rpctype"
+	"github.com/CvvT/syzkaller/syz-hub/state"
 )
 
 var (

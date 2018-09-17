@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/google/syzkaller/pkg/compiler"
+	"github.com/CvvT/syzkaller/pkg/compiler"
 )
 
 type netbsd struct{}

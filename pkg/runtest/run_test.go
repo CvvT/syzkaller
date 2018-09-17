@@ -9,11 +9,11 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/google/syzkaller/pkg/csource"
-	"github.com/google/syzkaller/pkg/host"
-	"github.com/google/syzkaller/prog"
-	"github.com/google/syzkaller/sys/targets"
-	_ "github.com/google/syzkaller/sys/test/gen" // pull in the test target
+	"github.com/CvvT/syzkaller/pkg/csource"
+	"github.com/CvvT/syzkaller/pkg/host"
+	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/sys/targets"
+	_ "github.com/CvvT/syzkaller/sys/test/gen" // pull in the test target
 )
 
 func Test(t *testing.T) {

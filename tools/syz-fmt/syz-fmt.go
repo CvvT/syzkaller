@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/google/syzkaller/pkg/ast"
+	"github.com/CvvT/syzkaller/pkg/ast"
 )
 
 func main() {
