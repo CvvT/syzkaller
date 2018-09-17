@@ -117,28 +117,35 @@ func checkMachine(args *checkArgs) (*rpctype.CheckArgs, error) {
 			}
 		}
 	}()
+	log.Logf(0, "CheckMachine2")
 	if err := checkRevisions(args); err != nil {
+		log.Logf(0, "error %s", err)
 		return nil, err
 	}
 	features, err := host.Check(args.target)
 	if err != nil {
+		log.Logf(0, "err %s", err)
 		return nil, err
 	}
 	if feat := features[host.FeatureCoverage]; !feat.Enabled &&
 		args.ipcConfig.Flags&ipc.FlagSignal != 0 {
 		return nil, fmt.Errorf("coverage is not supported (%v)", feat.Reason)
 	}
+	log.Logf(0, "here2")
 	if feat := features[host.FeatureSandboxSetuid]; !feat.Enabled &&
 		args.ipcConfig.Flags&ipc.FlagSandboxSetuid != 0 {
 		return nil, fmt.Errorf("sandbox=setuid is not supported (%v)", feat.Reason)
 	}
+	log.Logf(0, "here1")
 	if feat := features[host.FeatureSandboxNamespace]; !feat.Enabled &&
 		args.ipcConfig.Flags&ipc.FlagSandboxNamespace != 0 {
 		return nil, fmt.Errorf("sandbox=namespace is not supported (%v)", feat.Reason)
 	}
+	log.Logf(0, "here")
 	if err := checkSimpleProgram(args); err != nil {
 		return nil, err
 	}
+	log.Logf(0, "Features: :%v", features)
 	res := &rpctype.CheckArgs{
 		Features:      features,
 		EnabledCalls:  make(map[string][]int),
