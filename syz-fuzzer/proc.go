@@ -314,7 +314,9 @@ func (proc *Proc) logProgram(opts *ipc.ExecOpts, p *prog.Prog) {
 			syscall.Close(fd)
 		}
 	case OutputFile:
-		f, err := os.Create(fmt.Sprintf("%v-%v.prog", proc.fuzzer.name, proc.pid))
+		f, err := os.OpenFile(fmt.Sprintf("%v-%v.prog", proc.fuzzer.name, proc.pid), 
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, osutil.DefaultFilePerm)
+		// f, err := os.Create(fmt.Sprintf("%v-%v.prog", proc.fuzzer.name, proc.pid))
 		if err == nil {
 			if strOpts != "" {
 				fmt.Fprintf(f, "#%v\n", strOpts)
