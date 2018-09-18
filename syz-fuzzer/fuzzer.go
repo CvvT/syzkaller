@@ -259,8 +259,10 @@ func main() {
 		comparisonTracingEnabled: r.CheckResult.Features[host.FeatureComparisons].Enabled,
 		corpusHashes:             make(map[hash.Sig]struct{}),
 	}
-	for i := 0; fuzzer.poll(r.CheckResult); i++ {
-	}
+	// for i := 0; fuzzer.poll(r.CheckResult); i++ {
+	// }
+	fuzzer.poll(r.CheckResult)
+	
 	calls := make(map[*prog.Syscall]bool)
 	for _, id := range r.CheckResult.EnabledCalls[sandbox] {
 		calls[target.Syscalls[id]] = true
