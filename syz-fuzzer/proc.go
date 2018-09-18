@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"io/ioutil"
 
 	"github.com/CvvT/syzkaller/pkg/cover"
 	"github.com/CvvT/syzkaller/pkg/hash"
