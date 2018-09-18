@@ -12,7 +12,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"io/ioutil"
 
 	"github.com/CvvT/syzkaller/pkg/cover"
 	"github.com/CvvT/syzkaller/pkg/hash"
@@ -21,6 +20,7 @@ import (
 	_ "github.com/CvvT/syzkaller/pkg/rpctype"
 	"github.com/CvvT/syzkaller/pkg/signal"
 	"github.com/CvvT/syzkaller/prog"
+	"github.com/CvvT/syzkaller/pkg/osutil"
 )
 
 const (
