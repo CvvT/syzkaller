@@ -322,9 +322,9 @@ func (proc *Proc) logProgram(opts *ipc.ExecOpts, p *prog.Prog) {
 			if strOpts != "" {
 				fmt.Fprintf(f, "#%v\n", strOpts)
 			}
-			f.Write("Program:")
+			f.Write([]byte("Program:"))
 			f.Write(data)
-			f.Write("\n")
+			f.Write([]byte("\n"))
 			f.Close()
 		}
 	default:
