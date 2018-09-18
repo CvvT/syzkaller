@@ -219,6 +219,10 @@ func main() {
 	}
 
 	log.Logf(0, "syscalls: %v", len(r.CheckResult.EnabledCalls))
+	for _, call := range r.CheckResult.EnabledCalls {
+		log.Logf(0, "%d: %s\n", call, target.Syscalls[call].Name)
+	}
+
 	for _, feat := range r.CheckResult.Features {
 		log.Logf(0, "%v: %v", feat.Name, feat.Reason)
 	}
