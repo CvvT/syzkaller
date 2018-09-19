@@ -13,19 +13,19 @@ import (
 
 const maxBlobLen = uint64(100 << 10)
 
-func (p *Prog) NumArgs() ([]int) {
+func (p *Prog) NumArgs() []int {
 	total := make([]int, 0)
 	for _, call := range p.Calls {
 		ma := &mutationArgs{target: p.Target}
-		ForeachArg(c, ma.collectArg)
+		ForeachArg(call, ma.collectArg)
 		total = append(total, len(ma.args))
 	}
 	return total
 }
 
 // return the indices of the syscall and its argument
-func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, 
-	corpus []*Prog, annotation [][]int, pos *[]int) (bool) {
+func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable,
+	corpus []*Prog, annotation [][]int, pos *[]int) bool {
 	r := newRand(p.Target, rs)
 	ctx := &mutator{
 		p:      p,
@@ -155,33 +155,33 @@ func available(annotation [][]int, callIdx int) int {
 	for _, count := range annotation[callIdx] {
 		if count > threshold {
 			total += 1
-		} 
+		}
 	}
 	return total
 }
 
-func available(annotation [][]int, callIdx int, argIdx int) bool {
+func canskip(annotation [][]int, callIdx int, argIdx int) bool {
 	threshold := 2
 	if annotation[callIdx][argIdx] > threshold {
-		return false
+		return true
 	}
 	return false
 }
 
 // Return true if we successfully mutate one Arg
-func (ctx *mutator) mutateArg(annotation [][]int, pos *[]int) (bool) {
+func (ctx *mutator) mutateArg(annotation [][]int, pos *[]int) bool {
 	p, r := ctx.p, ctx.r
 	if len(p.Calls) == 0 {
 		return false
 	}
 	callIdx := r.Intn(len(p.Calls))
-	pos[0] = callIdx
+	(*pos)[0] = callIdx
 	c := p.Calls[callIdx]
 	log.Logf(0, "Mutate Call: %s", c)
 	if len(c.Args) == 0 {
 		return false
 	}
-	if available(annotationm callIdx) == 0 {
+	if available(annotation, callIdx) == 0 {
 		return false
 	}
 	s := analyze(ctx.ct, p, c)
@@ -198,7 +198,7 @@ func (ctx *mutator) mutateArg(annotation [][]int, pos *[]int) (bool) {
 			return false
 		}
 		idx = r.Intn(len(ma.args))
-		if !available(annotation, callIdx, idx) {
+		if canskip(annotation, callIdx, idx) {
 			ok = false
 			continue
 		}
@@ -208,7 +208,7 @@ func (ctx *mutator) mutateArg(annotation [][]int, pos *[]int) (bool) {
 			ok = false
 			continue
 		}
-		pos[1] = idx
+		(*pos)[1] = idx
 		log.Logf(0, "Mutate %d Type:, %v %v %v", idx, arg.Type(), arg, ctx)
 		p.insertBefore(c, calls)
 		if updateSizes {

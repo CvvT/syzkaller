@@ -105,14 +105,14 @@ const (
 const currentDBVersion = 3
 
 type Fuzzer struct {
-	name         string
-	inputs       []rpctype.RPCInput
-	annotation   [][]int    
-	// all inputs are associated with the same annotation, since all inputs are the 
+	name       string
+	inputs     []rpctype.RPCInput
+	annotation [][]int
+	// all inputs are associated with the same annotation, since all inputs are the
 	// same in terms of syscall sequence
-	newMaxSignal signal.Signal
-	firstConnect bool  // indicate whether this fuzzer has connected to the manager
-	rnd          *rand.Rand
+	newMaxSignal    signal.Signal
+	firstConnect    bool // indicate whether this fuzzer has connected to the manager
+	rnd             *rand.Rand
 	callIdx, argIdx int
 }
 
@@ -907,10 +907,10 @@ func (mgr *Manager) Connect(a *rpctype.ConnectArgs, r *rpctype.ConnectRes) error
 	defer mgr.mu.Unlock()
 
 	f := &Fuzzer{
-		name: a.Name,
-		rnd:  rand.New(rand.NewSource(time.Now().UnixNano())),
+		name:    a.Name,
+		rnd:     rand.New(rand.NewSource(time.Now().UnixNano())),
 		callIdx: -1,
-		argIdx:  -1
+		argIdx:  -1,
 	}
 	oldf := mgr.fuzzers[a.Name]
 	mgr.fuzzers[a.Name] = f
@@ -927,7 +927,7 @@ func (mgr *Manager) Connect(a *rpctype.ConnectArgs, r *rpctype.ConnectRes) error
 		}
 		// old fuzzer crashed
 		if oldf.callIdx != -1 && oldf.argIdx != -1 {
-			oldf.annotation[callIdx][argIdx] = 0
+			oldf.annotation[oldf.callIdx][oldf.argIdx] = 0
 		}
 		f.annotation = oldf.annotation
 		f.firstConnect = oldf.firstConnect
@@ -1037,7 +1037,7 @@ func (mgr *Manager) NewInputRaw(a *rpctype.NewInputArgs, r *int) error {
 		log.Fatalf("fuzzer %v is not connected", a.Name)
 	}
 
-	var p, err := mgr.target.Deserialize(a.RPCInput.Prog)
+	p, err := mgr.target.Deserialize(a.RPCInput.Prog)
 	if err != nil {
 		// This should not happen, but we see such cases episodically, reason unknown.
 		log.Logf(0, "failed to deserialize program from fuzzer: %v\n%s", err, a.RPCInput.Prog)
@@ -1048,7 +1048,7 @@ func (mgr *Manager) NewInputRaw(a *rpctype.NewInputArgs, r *int) error {
 		//initialize
 		p.Target = mgr.target
 		for _, num := range p.NumArgs() {
-			f.annotation = append(f.annotation, make([num]int))
+			f.annotation = append(f.annotation, make([]int, num))
 		}
 	}
 
@@ -1109,12 +1109,12 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 		if f.callIdx != -1 && f.argIdx != -1 {
 			//TO-DO: I can also check the log to see if there is any change
 			// If not, the mutated argument can also be considered as irrelevant
-			f.annotation[callIdx][argIdx] += 1
+			f.annotation[f.callIdx][f.argIdx] += 1
 		}
-		prog := mgr.target.Deserialize(candidate.Prog)
+		p, _ := mgr.target.Deserialize(candidate.Prog)
 		pos := make([]int, 2)
 		for {
-			if prog.Mutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
+			if p.Mutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
 				f.callIdx = pos[0]
 				f.argIdx = pos[1]
 				break
@@ -1122,10 +1122,10 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 		}
 		pos = nil
 		r.Candidates = append(r.Candidates, rpctype.RPCCandidate{
-			Prog:      prog.Serialize(),
+			Prog:      p.Serialize(),
 			Minimized: false,
 			Smashed:   false,
-		}}
+		})
 	}
 
 	log.Logf(4, "poll from %v: candidates=%v inputs=%v maxsignal=%v",
