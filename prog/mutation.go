@@ -168,7 +168,7 @@ func available(annotation [][]int, callIdx int) int {
 	total := 0
 	threshold := 2
 	for _, count := range annotation[callIdx] {
-		if count > threshold {
+		if count <= threshold {
 			total += 1
 		}
 	}
@@ -192,7 +192,7 @@ func (ctx *mutator) rmutateArg(annotation [][]int, pos *[]int) bool {
 	callIdx := r.Intn(len(p.Calls))
 	(*pos)[0] = callIdx
 	c := p.Calls[callIdx]
-	log.Logf(0, "Mutate Call: %s", c)
+	// log.Logf(0, "Mutate Call: %s", c)
 	if len(c.Args) == 0 {
 		return false
 	}
@@ -212,6 +212,7 @@ func (ctx *mutator) rmutateArg(annotation [][]int, pos *[]int) bool {
 		if len(ma.args) == 0 {
 			return false
 		}
+		log.Logf(0, "Attempt %d %d", callIdx, len(ma.args))
 		idx = r.Intn(len(ma.args))
 		if canskip(annotation, callIdx, idx) {
 			ok = false
@@ -320,8 +321,9 @@ func (t *IntType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Ca
 
 func (t *FlagsType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
 	// Do not mutate flags
-	return nil, true, false
-	// return mutateInt(r, s, arg)
+	// return nil, true, false
+	log.Fatalf("Mutate FlagsType")
+	return mutateInt(r, s, arg)
 }
 
 func (t *LenType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
@@ -335,8 +337,9 @@ func (t *LenType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Ca
 
 func (t *ResourceType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
 	// We don't need to regenerate resource
-	return nil, true, false
-	// return regenerate(r, s, arg)
+	// return nil, true, false
+	log.Fatalf("Mutate ResourceType")
+	return regenerate(r, s, arg)
 }
 
 func (t *VmaType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
@@ -440,9 +443,9 @@ func (t *StructType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []
 }
 
 func (t *UnionType) mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool) {
-	log.Logf(0, "Mutate unionType")
+	log.Fatalf("Mutate unionType")
 	// We don't want to change the type of any argument
-	return nil, true, false
+	// return nil, true, false
 	if gen := r.target.SpecialTypes[t.Name()]; gen != nil {
 		var newArg Arg
 		newArg, calls = gen(&Gen{r, s}, t, arg)
@@ -490,7 +493,7 @@ type mutationArgs struct {
 func (ma *mutationArgs) collectArg(arg Arg, ctx *ArgCtx) {
 	ignoreSpecial := ma.ignoreSpecial
 	ma.ignoreSpecial = false
-	log.Logf(0, "Collect: %v", arg.Type())
+	// log.Logf(0, "Collect: %v", arg.Type())
 	switch typ := arg.Type().(type) {
 	case *StructType:
 		if ma.target.SpecialTypes[typ.Name()] == nil || ignoreSpecial {
@@ -499,6 +502,8 @@ func (ma *mutationArgs) collectArg(arg Arg, ctx *ArgCtx) {
 		// These special structs are mutated as a whole.
 		ctx.Stop = true
 	case *UnionType:
+		// Don't change type of argument
+		return
 		if ma.target.SpecialTypes[typ.Name()] == nil && len(typ.Fields) == 1 || ignoreSpecial {
 			return
 		}
@@ -521,11 +526,17 @@ func (ma *mutationArgs) collectArg(arg Arg, ctx *ArgCtx) {
 			// TODO: we ought to mutate this, but we don't have code for this yet.
 			return
 		}
+	// Don't mutate following tpyes
+	case *ResourceType:
+		return
+	case *FlagsType:
+		return
 	}
 	typ := arg.Type()
 	if typ == nil || typ.Dir() == DirOut || !typ.Varlen() && typ.Size() == 0 {
 		return
 	}
+	// log.Logf(0, "Append Arg")
 	ma.args = append(ma.args, arg)
 	ma.ctxes = append(ma.ctxes, *ctx)
 }

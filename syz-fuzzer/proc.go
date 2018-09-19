@@ -79,7 +79,7 @@ func (proc *Proc) loop() {
 				// proc.triageInput(item)
 			case *WorkCandidate:
 				// Add mutated program to manager before we execute the original one
-				// TO-DO: We need to record which argument is mutated and avoid mutate it again if the newly-created 
+				// TO-DO: We need to record which argument is mutated and avoid mutate it again if the newly-created
 				// program doesn't lead to a crash!!!
 				// p := item.p.Clone()
 				// p.Mutate(proc.rnd, programLength, proc.fuzzer.choiceTable, proc.fuzzer.corpusSnapshot())
@@ -102,6 +102,11 @@ func (proc *Proc) loop() {
 		// monitor.waitForOutput set a 10s timeout
 		// we should set a larger sleep time
 		time.Sleep(15 * time.Second)
+		// Ask for candidate
+		select {
+		case proc.fuzzer.needPoll <- struct{}{}:
+		default:
+		}
 		// ct := proc.fuzzer.choiceTable
 		// corpus := proc.fuzzer.corpusSnapshot()
 		// if len(corpus) != 0 {

@@ -21,7 +21,7 @@ import (
 	"github.com/CvvT/syzkaller/pkg/rpctype"
 	"github.com/CvvT/syzkaller/pkg/signal"
 	"github.com/CvvT/syzkaller/prog"
-	"github.com/CvvT/syzkaller/sys"
+	_ "github.com/CvvT/syzkaller/sys"
 	"github.com/CvvT/syzkaller/vm"
 )
 
@@ -112,9 +112,6 @@ type Crash struct {
 }
 
 func main() {
-	if sys.GitRevision == "" {
-		log.Fatalf("Bad syz-manager build. Build with make, run bin/syz-manager.")
-	}
 	flag.Parse()
 	log.EnableLogCaching(1000, 1<<20)
 	cfg, err := mgrconfig.LoadFile(*flagConfig)
@@ -216,11 +213,13 @@ func (mgr *Manager) vmLoop() {
 		for _, num := range p.NumArgs() {
 			f.annotation = append(f.annotation, make([]int, num))
 		}
-		
+
+		log.Logf(0, "Annotation %v", f.annotation)
 		pos := make([]int, 2)
 		newprog.RMutate(rnd, 30, choiceTable, corpus, f.annotation, &pos)
+		res := newprog.RMutate(rnd, 30, nil, corpus, f.annotation, &pos)
 		pos = nil
-		log.Logf(0, "New Prog: %s", newprog.Serialize())
+		log.Logf(0, "%v New Prog: %s", res, newprog.Serialize())
 	}
 
 }

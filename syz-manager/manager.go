@@ -1114,13 +1114,16 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 			f.annotation = append(f.annotation, make([]int, num))
 		}
 	} else {
+		log.Logf(0, "Poll\n")
 		if f.callIdx != -1 && f.argIdx != -1 {
 			//TO-DO: I can also check the log to see if there is any change
 			// If not, the mutated argument can also be considered as irrelevant
 			f.annotation[f.callIdx][f.argIdx] += 1
 		}
+		log.Logf(0, "Annotation %v\n", f.annotation)
 		pos := make([]int, 2)
 		for {
+			log.Logf(0, "Mutate Once\n")
 			if p.RMutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
 				f.callIdx = pos[0]
 				f.argIdx = pos[1]
