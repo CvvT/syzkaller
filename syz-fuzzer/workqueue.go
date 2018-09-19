@@ -91,6 +91,10 @@ func (wq *WorkQueue) dequeue() (item interface{}) {
 	wq.mu.RLock()
 	if len(wq.triageCandidate)+len(wq.candidate)+len(wq.triage)+len(wq.smash) == 0 {
 		wq.mu.RUnlock()
+		select {
+		case wq.needCandidates <- struct{}{}:
+		default:
+		}
 		return nil
 	}
 	wq.mu.RUnlock()
@@ -115,12 +119,12 @@ func (wq *WorkQueue) dequeue() (item interface{}) {
 		wq.smash = wq.smash[:last]
 	}
 	wq.mu.Unlock()
-	if wantCandidates {
-		select {
-		case wq.needCandidates <- struct{}{}:
-		default:
-		}
-	}
+	// if wantCandidates {
+	// 	select {
+	// 	case wq.needCandidates <- struct{}{}:
+	// 	default:
+	// 	}
+	// }
 	return item
 }
 

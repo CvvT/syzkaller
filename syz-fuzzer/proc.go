@@ -91,7 +91,7 @@ func (proc *Proc) loop() {
 				// })
 				proc.execute(proc.execOpts, item.p, item.flags, StatCandidate)
 			case *WorkSmash:
-				proc.smashInput(item)
+				// proc.smashInput(item)
 			default:
 				log.Fatalf("unknown work type: %#v", item)
 			}
