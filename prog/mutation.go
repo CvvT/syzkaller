@@ -522,6 +522,7 @@ func (ma *mutationArgs) collectArg(arg Arg, ctx *ArgCtx) {
 			return // string const
 		}
 	case *PtrType:
+		return
 		if arg.(*PointerArg).IsNull() {
 			// TODO: we ought to mutate this, but we don't have code for this yet.
 			return
