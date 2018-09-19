@@ -1114,7 +1114,7 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 		p, _ := mgr.target.Deserialize(candidate.Prog)
 		pos := make([]int, 2)
 		for {
-			if p.Mutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
+			if p.RMutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
 				f.callIdx = pos[0]
 				f.argIdx = pos[1]
 				break

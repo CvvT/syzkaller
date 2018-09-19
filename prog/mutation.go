@@ -24,7 +24,7 @@ func (p *Prog) NumArgs() []int {
 }
 
 // return the indices of the syscall and its argument
-func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable,
+func (p *Prog) RMutate(rs rand.Source, ncalls int, ct *ChoiceTable,
 	corpus []*Prog, annotation [][]int, pos *[]int) bool {
 	r := newRand(p.Target, rs)
 	ctx := &mutator{
@@ -36,29 +36,44 @@ func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable,
 	}
 	ok := false
 	for stop, iter := false, 0; !stop && iter < 10; stop, iter = ok, iter+1 {
-		// We want only one mutation in place
-		// && r.oneOf(3) {
-		//switch {
-		// case r.oneOf(5):
-		// Not all calls have anything squashable,
-		// so this has lower priority in reality.
-		//  	ok = ctx.squashAny()
-		// case r.nOutOf(1, 100):
-		// 	ok = ctx.splice()
-		// case r.nOutOf(20, 31):
-		//	ok = ctx.insertCall()
-		// case r.nOutOf(10, 11):
-		//	ok = ctx.mutateArg()
-		// default:
-		// 	ok = ctx.removeCall()
-		// }
-		ok = ctx.mutateArg(annotation, pos)
+		ok = ctx.rmutateArg(annotation, pos)
 	}
 	for _, c := range p.Calls {
 		p.Target.SanitizeCall(c)
 	}
 	p.debugValidate()
 	return ok
+}
+
+func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, corpus []*Prog) {
+	r := newRand(p.Target, rs)
+	ctx := &mutator{
+		p:      p,
+		r:      r,
+		ncalls: ncalls,
+		ct:     ct,
+		corpus: corpus,
+	}
+	for stop, ok := false, false; !stop; stop = ok && r.oneOf(3) {
+		switch {
+		case r.oneOf(5):
+			// Not all calls have anything squashable,
+			// so this has lower priority in reality.
+			ok = ctx.squashAny()
+		case r.nOutOf(1, 100):
+			ok = ctx.splice()
+		case r.nOutOf(20, 31):
+			ok = ctx.insertCall()
+		case r.nOutOf(10, 11):
+			ok = ctx.mutateArg()
+		default:
+			ok = ctx.removeCall()
+		}
+	}
+	for _, c := range p.Calls {
+		p.Target.SanitizeCall(c)
+	}
+	p.debugValidate()
 }
 
 type mutator struct {
@@ -169,7 +184,7 @@ func canskip(annotation [][]int, callIdx int, argIdx int) bool {
 }
 
 // Return true if we successfully mutate one Arg
-func (ctx *mutator) mutateArg(annotation [][]int, pos *[]int) bool {
+func (ctx *mutator) rmutateArg(annotation [][]int, pos *[]int) bool {
 	p, r := ctx.p, ctx.r
 	if len(p.Calls) == 0 {
 		return false
@@ -217,6 +232,40 @@ func (ctx *mutator) mutateArg(annotation [][]int, pos *[]int) bool {
 		p.Target.SanitizeCall(c)
 	}
 	return ok
+}
+
+func (ctx *mutator) mutateArg() bool {
+	p, r := ctx.p, ctx.r
+	if len(p.Calls) == 0 {
+		return false
+	}
+	c := p.Calls[r.Intn(len(p.Calls))]
+	if len(c.Args) == 0 {
+		return false
+	}
+	s := analyze(ctx.ct, p, c)
+	updateSizes := true
+	for stop, ok := false, false; !stop; stop = ok && r.oneOf(3) {
+		ok = true
+		ma := &mutationArgs{target: p.Target}
+		ForeachArg(c, ma.collectArg)
+		if len(ma.args) == 0 {
+			return false
+		}
+		idx := r.Intn(len(ma.args))
+		arg, ctx := ma.args[idx], ma.ctxes[idx]
+		calls, ok1 := p.Target.mutateArg(r, s, arg, ctx, &updateSizes)
+		if !ok1 {
+			ok = false
+			continue
+		}
+		p.insertBefore(c, calls)
+		if updateSizes {
+			p.Target.assignSizesCall(c)
+		}
+		p.Target.SanitizeCall(c)
+	}
+	return true
 }
 
 func (target *Target) mutateArg(r *randGen, s *state, arg Arg, ctx ArgCtx, updateSizes *bool) ([]*Call, bool) {
