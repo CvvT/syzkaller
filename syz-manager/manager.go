@@ -1103,15 +1103,22 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 
 	last := len(mgr.candidates) - 1
 	candidate := mgr.candidates[last]
+	p, _ := mgr.target.Deserialize(candidate.Prog)
 	if !f.firstConnect { //need origin program
+		log.Logf("First Poll\n")
 		r.Candidates = append(r.Candidates, candidate)
+		f.firstConnect = true
+		//initialize
+		p.Target = mgr.target
+		for _, num := range p.NumArgs() {
+			f.annotation = append(f.annotation, make([]int, num))
+		}
 	} else {
 		if f.callIdx != -1 && f.argIdx != -1 {
 			//TO-DO: I can also check the log to see if there is any change
 			// If not, the mutated argument can also be considered as irrelevant
 			f.annotation[f.callIdx][f.argIdx] += 1
 		}
-		p, _ := mgr.target.Deserialize(candidate.Prog)
 		pos := make([]int, 2)
 		for {
 			if p.RMutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
@@ -1120,6 +1127,8 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 				break
 			}
 		}
+		log.Logf(0, "Annotation %v\n", f.annotation)
+		log.Logf(0, "Executing: %s\n", p.Serialize())
 		pos = nil
 		r.Candidates = append(r.Candidates, rpctype.RPCCandidate{
 			Prog:      p.Serialize(),
