@@ -94,9 +94,15 @@ const (
 const currentDBVersion = 3
 
 type Fuzzer struct {
-	name         string
-	inputs       []rpctype.RPCInput
-	newMaxSignal signal.Signal
+	name       string
+	inputs     []rpctype.RPCInput
+	annotation [][]int
+	// all inputs are associated with the same annotation, since all inputs are the
+	// same in terms of syscall sequence
+	newMaxSignal    signal.Signal
+	firstConnect    bool // indicate whether this fuzzer has connected to the manager
+	rnd             *rand.Rand
+	callIdx, argIdx int
 }
 
 type Crash struct {
@@ -191,6 +197,12 @@ func (mgr *Manager) vmLoop() {
 	}
 	prios := mgr.target.CalculatePriorities(corpus)
 	choiceTable := mgr.target.BuildChoiceTable(prios, calls)
+	f := &Fuzzer{
+		name:    "a.Name",
+		rnd:     rand.New(rand.NewSource(time.Now().UnixNano())),
+		callIdx: -1,
+		argIdx:  -1,
+	}
 	for _, rec := range mgr.corpusDB.Records {
 		p, err := mgr.target.Deserialize(rec.Val)
 		if err != nil {
@@ -199,7 +211,15 @@ func (mgr *Manager) vmLoop() {
 		log.Logf(0, "Original Prog: %s", p.Serialize())
 
 		newprog := p.Clone()
-		newprog.Mutate(rnd, 30, choiceTable, corpus)
+
+		p.Target = mgr.target
+		for _, num := range p.NumArgs() {
+			f.annotation = append(f.annotation, make([]int, num))
+		}
+		
+		pos := make([]int, 2)
+		newprog.RMutate(rnd, 30, choiceTable, corpus, f.annotation, &pos)
+		pos = nil
 		log.Logf(0, "New Prog: %s", newprog.Serialize())
 	}
 

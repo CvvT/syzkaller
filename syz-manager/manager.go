@@ -1028,45 +1028,45 @@ func (mgr *Manager) NewInput(a *rpctype.NewInputArgs, r *int) error {
 
 // Similar to the function NewInput *Except* that we do not have signal (including coverage info and etc.)
 // and we add this input into the repository of the same fuzzer (in case we only have one instance)
-func (mgr *Manager) NewInputRaw(a *rpctype.NewInputArgs, r *int) error {
-	mgr.mu.Lock()
-	defer mgr.mu.Unlock()
+// func (mgr *Manager) NewInputRaw(a *rpctype.NewInputArgs, r *int) error {
+// 	mgr.mu.Lock()
+// 	defer mgr.mu.Unlock()
 
-	f := mgr.fuzzers[a.Name]
-	if f == nil {
-		log.Fatalf("fuzzer %v is not connected", a.Name)
-	}
+// 	f := mgr.fuzzers[a.Name]
+// 	if f == nil {
+// 		log.Fatalf("fuzzer %v is not connected", a.Name)
+// 	}
 
-	p, err := mgr.target.Deserialize(a.RPCInput.Prog)
-	if err != nil {
-		// This should not happen, but we see such cases episodically, reason unknown.
-		log.Logf(0, "failed to deserialize program from fuzzer: %v\n%s", err, a.RPCInput.Prog)
-		return nil
-	}
+// 	p, err := mgr.target.Deserialize(a.RPCInput.Prog)
+// 	if err != nil {
+// 		// This should not happen, but we see such cases episodically, reason unknown.
+// 		log.Logf(0, "failed to deserialize program from fuzzer: %v\n%s", err, a.RPCInput.Prog)
+// 		return nil
+// 	}
 
-	if len(f.annotation) == 0 {
-		//initialize
-		p.Target = mgr.target
-		for _, num := range p.NumArgs() {
-			f.annotation = append(f.annotation, make([]int, num))
-		}
-	}
+// 	if len(f.annotation) == 0 {
+// 		//initialize
+// 		p.Target = mgr.target
+// 		for _, num := range p.NumArgs() {
+// 			f.annotation = append(f.annotation, make([]int, num))
+// 		}
+// 	}
 
-	mgr.stats.newInputs.inc()
-	sig := hash.String(a.RPCInput.Prog)
-	if inp, ok := mgr.corpus[sig]; ok {
-		//ignore duplicate cases???
-		log.Logf(0, "%v Dup input: %s", a.Name, inp.Prog)
-		f.inputs = append(f.inputs, inp)
-	} else {
-		inp := a.RPCInput
-		log.Logf(0, "%v New input: %s", a.Name, inp.Prog)
-		mgr.corpus[sig] = inp
-		f.inputs = append(f.inputs, inp)
-	}
-	log.Logf(0, "%v New input size: %v %v", a.Name, len(f.inputs), len(mgr.corpus))
-	return nil
-}
+// 	mgr.stats.newInputs.inc()
+// 	sig := hash.String(a.RPCInput.Prog)
+// 	if inp, ok := mgr.corpus[sig]; ok {
+// 		//ignore duplicate cases???
+// 		log.Logf(0, "%v Dup input: %s", a.Name, inp.Prog)
+// 		f.inputs = append(f.inputs, inp)
+// 	} else {
+// 		inp := a.RPCInput
+// 		log.Logf(0, "%v New input: %s", a.Name, inp.Prog)
+// 		mgr.corpus[sig] = inp
+// 		f.inputs = append(f.inputs, inp)
+// 	}
+// 	log.Logf(0, "%v New input size: %v %v", a.Name, len(f.inputs), len(mgr.corpus))
+// 	return nil
+// }
 
 func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 	mgr.mu.Lock()
@@ -1105,7 +1105,7 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 	candidate := mgr.candidates[last]
 	p, _ := mgr.target.Deserialize(candidate.Prog)
 	if !f.firstConnect { //need origin program
-		log.Logf("First Poll\n")
+		log.Logf(0, "First Poll\n")
 		r.Candidates = append(r.Candidates, candidate)
 		f.firstConnect = true
 		//initialize
