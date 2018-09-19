@@ -107,7 +107,13 @@ const currentDBVersion = 3
 type Fuzzer struct {
 	name         string
 	inputs       []rpctype.RPCInput
+	annotation   [][]int    
+	// all inputs are associated with the same annotation, since all inputs are the 
+	// same in terms of syscall sequence
 	newMaxSignal signal.Signal
+	firstConnect bool  // indicate whether this fuzzer has connected to the manager
+	rnd          *rand.Rand
+	callIdx, argIdx int
 }
 
 type Crash struct {
@@ -503,7 +509,7 @@ func (mgr *Manager) loadCorpus() {
 			mgr.disabledHashes[hash.String(rec.Val)] = struct{}{}
 			continue
 		}
-		log.Logf(0, "Load program: %s", rec.Val)
+
 		mgr.candidates = append(mgr.candidates, rpctype.RPCCandidate{
 			Prog:      rec.Val,
 			Minimized: minimized,
@@ -519,15 +525,17 @@ func (mgr *Manager) loadCorpus() {
 	// in such case it will also lost all cached candidates. Or, the input can be somewhat flaky
 	// and doesn't give the coverage on first try. So we give each input the second chance.
 	// Shuffling should alleviate deterministically losing the same inputs on fuzzer crashing.
-	mgr.candidates = append(mgr.candidates, mgr.candidates...)
-	shuffle := mgr.candidates[len(mgr.candidates)/2:]
-	for i := range shuffle {
-		j := i + rand.Intn(len(shuffle)-i)
-		shuffle[i], shuffle[j] = shuffle[j], shuffle[i]
-	}
-	if mgr.phase != phaseInit {
-		panic(fmt.Sprintf("loadCorpus: bad phase %v", mgr.phase))
-	}
+	// +++ We don't need this because we make sure that only one program is executed at a time,
+	// +++ And we always have one candidate pending.
+	// mgr.candidates = append(mgr.candidates, mgr.candidates...)
+	// shuffle := mgr.candidates[len(mgr.candidates)/2:]
+	// for i := range shuffle {
+	// 	j := i + rand.Intn(len(shuffle)-i)
+	// 	shuffle[i], shuffle[j] = shuffle[j], shuffle[i]
+	// }
+	// if mgr.phase != phaseInit {
+	// 	panic(fmt.Sprintf("loadCorpus: bad phase %v", mgr.phase))
+	// }
 	mgr.phase = phaseLoadedCorpus
 }
 
@@ -900,6 +908,9 @@ func (mgr *Manager) Connect(a *rpctype.ConnectArgs, r *rpctype.ConnectRes) error
 
 	f := &Fuzzer{
 		name: a.Name,
+		rnd:  rand.New(rand.NewSource(time.Now().UnixNano())),
+		callIdx: -1,
+		argIdx:  -1
 	}
 	oldf := mgr.fuzzers[a.Name]
 	mgr.fuzzers[a.Name] = f
@@ -914,6 +925,12 @@ func (mgr *Manager) Connect(a *rpctype.ConnectArgs, r *rpctype.ConnectRes) error
 		for _, inp := range oldf.inputs {
 			f.inputs = append(f.inputs, inp)
 		}
+		// old fuzzer crashed
+		if oldf.callIdx != -1 && oldf.argIdx != -1 {
+			oldf.annotation[callIdx][argIdx] = 0
+		}
+		f.annotation = oldf.annotation
+		f.firstConnect = oldf.firstConnect
 	}
 	log.Logf(0, "Connect: size2 %v", len(f.inputs))
 	r.EnabledCalls = mgr.enabledSyscalls
@@ -1020,10 +1037,19 @@ func (mgr *Manager) NewInputRaw(a *rpctype.NewInputArgs, r *int) error {
 		log.Fatalf("fuzzer %v is not connected", a.Name)
 	}
 
-	if _, err := mgr.target.Deserialize(a.RPCInput.Prog); err != nil {
+	var p, err := mgr.target.Deserialize(a.RPCInput.Prog)
+	if err != nil {
 		// This should not happen, but we see such cases episodically, reason unknown.
 		log.Logf(0, "failed to deserialize program from fuzzer: %v\n%s", err, a.RPCInput.Prog)
 		return nil
+	}
+
+	if len(f.annotation) == 0 {
+		//initialize
+		p.Target = mgr.target
+		for _, num := range p.NumArgs() {
+			f.annotation = append(f.annotation, make([num]int))
+		}
 	}
 
 	mgr.stats.newInputs.inc()
@@ -1070,44 +1096,38 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 		}
 	}
 	r.MaxSignal = f.newMaxSignal.Split(500).Serialize()
-	maxInputs := 1
-	if maxInputs < mgr.cfg.Procs {
-		maxInputs = mgr.cfg.Procs
-	}
-	if a.NeedCandidates {
-		for i := 0; i < maxInputs && len(mgr.candidates) > 0; i++ {
-			last := len(mgr.candidates) - 1
-			r.Candidates = append(r.Candidates, mgr.candidates[last])
-			mgr.candidates[last] = rpctype.RPCCandidate{}
-			mgr.candidates = mgr.candidates[:last]
+	// maxInputs := 1
+	// if maxInputs < mgr.cfg.Procs {
+	// 	maxInputs = mgr.cfg.Procs
+	// }
+
+	last := len(mgr.candidates) - 1
+	candidate := mgr.candidates[last]
+	if !f.firstConnect { //need origin program
+		r.Candidates = append(r.Candidates, candidate)
+	} else {
+		if f.callIdx != -1 && f.argIdx != -1 {
+			//TO-DO: I can also check the log to see if there is any change
+			// If not, the mutated argument can also be considered as irrelevant
+			f.annotation[callIdx][argIdx] += 1
 		}
-	}
-	log.Logf(0, "+++++++++++++++++++++++++%v: Input size: %v++++++++++++++", a.Name, len(f.inputs))
-	if len(r.Candidates) == 0 {
-		for i := 0; i < maxInputs && len(f.inputs) > 0; i++ {
-			last := len(f.inputs) - 1
-			r.NewInputs = append(r.NewInputs, f.inputs[last])
-			log.Logf(0, "Load one Newinput %s", f.inputs[last].Prog)
-			f.inputs[last] = rpctype.RPCInput{}
-			f.inputs = f.inputs[:last]
-		}
-		if len(f.inputs) == 0 {
-			f.inputs = nil
-		}
-	}
-	if len(mgr.candidates) == 0 {
-		mgr.candidates = nil
-		if mgr.phase == phaseLoadedCorpus {
-			if mgr.cfg.HubClient != "" {
-				mgr.phase = phaseTriagedCorpus
-				go mgr.hubSyncLoop()
-			} else {
-				mgr.phase = phaseTriagedHub
+		prog := mgr.target.Deserialize(candidate.Prog)
+		pos := make([]int, 2)
+		for {
+			if prog.Mutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
+				f.callIdx = pos[0]
+				f.argIdx = pos[1]
+				break
 			}
-		} else if mgr.phase == phaseQueriedHub {
-			mgr.phase = phaseTriagedHub
 		}
+		pos = nil
+		r.Candidates = append(r.Candidates, rpctype.RPCCandidate{
+			Prog:      prog.Serialize(),
+			Minimized: false,
+			Smashed:   false,
+		}}
 	}
+
 	log.Logf(4, "poll from %v: candidates=%v inputs=%v maxsignal=%v",
 		a.Name, len(r.Candidates), len(r.NewInputs), len(r.MaxSignal.Elems))
 	return nil

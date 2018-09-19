@@ -13,7 +13,19 @@ import (
 
 const maxBlobLen = uint64(100 << 10)
 
-func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, corpus []*Prog) {
+func (p *Prog) NumArgs() ([]int) {
+	total := make([]int, 0)
+	for _, call := range p.Calls {
+		ma := &mutationArgs{target: p.Target}
+		ForeachArg(c, ma.collectArg)
+		total = append(total, len(ma.args))
+	}
+	return total
+}
+
+// return the indices of the syscall and its argument
+func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, 
+	corpus []*Prog, annotation [][]int, pos *[]int) (bool) {
 	r := newRand(p.Target, rs)
 	ctx := &mutator{
 		p:      p,
@@ -22,7 +34,8 @@ func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, corpus []*Pro
 		ct:     ct,
 		corpus: corpus,
 	}
-	for stop, ok, iter := false, false, 0; !stop && iter < 10; stop, iter = ok, iter+1 {
+	ok := false
+	for stop, iter := false, 0; !stop && iter < 10; stop, iter = ok, iter+1 {
 		// We want only one mutation in place
 		// && r.oneOf(3) {
 		//switch {
@@ -39,12 +52,13 @@ func (p *Prog) Mutate(rs rand.Source, ncalls int, ct *ChoiceTable, corpus []*Pro
 		// default:
 		// 	ok = ctx.removeCall()
 		// }
-		ok = ctx.mutateArg()
+		ok = ctx.mutateArg(annotation, pos)
 	}
 	for _, c := range p.Calls {
 		p.Target.SanitizeCall(c)
 	}
 	p.debugValidate()
+	return ok
 }
 
 type mutator struct {
@@ -135,20 +149,45 @@ func (ctx *mutator) removeCall() bool {
 	return true
 }
 
-// Return true we successfully mutate one Arg
-func (ctx *mutator) mutateArg() bool {
+func available(annotation [][]int, callIdx int) int {
+	total := 0
+	threshold := 2
+	for _, count := range annotation[callIdx] {
+		if count > threshold {
+			total += 1
+		} 
+	}
+	return total
+}
+
+func available(annotation [][]int, callIdx int, argIdx int) bool {
+	threshold := 2
+	if annotation[callIdx][argIdx] > threshold {
+		return false
+	}
+	return false
+}
+
+// Return true if we successfully mutate one Arg
+func (ctx *mutator) mutateArg(annotation [][]int, pos *[]int) (bool) {
 	p, r := ctx.p, ctx.r
 	if len(p.Calls) == 0 {
 		return false
 	}
-	c := p.Calls[r.Intn(len(p.Calls))]
+	callIdx := r.Intn(len(p.Calls))
+	pos[0] = callIdx
+	c := p.Calls[callIdx]
 	log.Logf(0, "Mutate Call: %s", c)
 	if len(c.Args) == 0 {
+		return false
+	}
+	if available(annotationm callIdx) == 0 {
 		return false
 	}
 	s := analyze(ctx.ct, p, c)
 	updateSizes := true
 	ok := false
+	idx := -1
 	for stop, iter := false, 0; !stop && iter < 10; stop, iter = ok, iter+1 {
 		// We want only one mutation
 		// && r.oneOf(3) {
@@ -158,13 +197,18 @@ func (ctx *mutator) mutateArg() bool {
 		if len(ma.args) == 0 {
 			return false
 		}
-		idx := r.Intn(len(ma.args))
+		idx = r.Intn(len(ma.args))
+		if !available(annotation, callIdx, idx) {
+			ok = false
+			continue
+		}
 		arg, ctx := ma.args[idx], ma.ctxes[idx]
 		calls, ok1 := p.Target.mutateArg(r, s, arg, ctx, &updateSizes)
 		if !ok1 {
 			ok = false
 			continue
 		}
+		pos[1] = idx
 		log.Logf(0, "Mutate %d Type:, %v %v %v", idx, arg.Type(), arg, ctx)
 		p.insertBefore(c, calls)
 		if updateSizes {
