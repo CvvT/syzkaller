@@ -2,11 +2,8 @@ package main
 
 import (
 	"fmt"
-	"os"
-	"flag"
 	"regexp"
 	"runtime"
-	"io/ioutil"
 	"strings"
 	"strconv"
 
@@ -33,28 +30,12 @@ type Obj struct {
 	base_addr  uint64
 }
 
-var (
-	flagOS        = flag.String("os", "linux", "target os")
-	flagArch      = flag.String("arch", runtime.GOARCH, "target arch")
-)
 
-func main() {
-	flag.Parse()
-	if len(flag.Args()) == 0 {
-		fmt.Fprintf(os.Stderr, "usage: exe [flags] file-with-programs+\n")
-		flag.PrintDefaults()
-		os.Exit(1)
-	}
+func AnalyzeReport(data []byte) ([]Obj) {
 
-	target, err := prog.GetTarget(*flagOS, *flagArch)
+	target, err := prog.GetTarget("linux", runtime.GOARCH)
 	if err != nil {
 		fmt.Printf("%v", err)
-	}
-
-	data, err := ioutil.ReadFile(flag.Args()[0])
-	if err != nil {
-		fmt.Print("Open file error", err)
-		return
 	}
 
 	// Extract executed program
@@ -80,11 +61,12 @@ func main() {
 
 	writes.merge()
 	writes.root.print()
+	// writes.root.singleprint()
 
 	results := make([]Obj, 0)
 	writes.root.collect(&results)
-	fmt.Printf("%v", results)
-	// writes.root.singleprint()
+	// fmt.Printf("%v", results)
+	return results
 }
 
 func analyze(block string, results *Mem) (string) {
@@ -281,3 +263,16 @@ func (node *Node) singleprint() {
 	fmt.Printf("[+]addr:%x size: %d base: %x\n", node.mem.start_addr, node.mem.size, node.mem.base_addr)
 }
 
+func CompareReport(a []Obj, b []Obj) (bool) {
+	var atotal, btotal uint64 
+	for _, mem := range a {
+		atotal += mem.size
+	}
+
+	for _, mem := range b {
+		btotal += mem.size
+	}
+
+	fmt.Printf("Compare %d %d\n", atotal, btotal)
+	return atotal == btotal
+}

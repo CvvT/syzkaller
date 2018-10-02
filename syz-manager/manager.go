@@ -85,6 +85,9 @@ type Manager struct {
 	// For checking that files that we are using are not changing under us.
 	// Maps file name to modification time.
 	usedFiles map[string]time.Time
+	//private
+	firstCrash     bool
+	objects        []Obj
 }
 
 const (
@@ -114,6 +117,7 @@ type Fuzzer struct {
 	firstConnect    bool // indicate whether this fuzzer has connected to the manager
 	rnd             *rand.Rand
 	callIdx, argIdx int
+	objects    []Obj //crash results
 }
 
 type Crash struct {
@@ -194,6 +198,7 @@ func RunManager(cfg *mgrconfig.Config, target *prog.Target, syscalls map[int]boo
 		needMoreRepros:  make(chan chan bool),
 		reproRequest:    make(chan chan map[string]bool),
 		usedFiles:       make(map[string]time.Time),
+		firstCrash:      false,
 	}
 
 	log.Logf(0, "loading corpus...")
@@ -609,6 +614,20 @@ func (mgr *Manager) emailCrash(crash *Crash) {
 }
 
 func (mgr *Manager) saveCrash(crash *Crash) bool {
+
+	results := AnalyzeReport(crash.Output)
+	if len(mgr.objects) == 0 { //first crash
+		mgr.objects = results
+	} else {
+		// save results to fuzzer
+		f := mgr.fuzzers[fmt.Sprintf("vm-%v", crash.vmIndex)]
+		if f == nil {
+			log.Fatalf("Fuzzer is not connected")
+		}
+		f.objects = results
+	}
+	
+
 	if crash.Suppressed {
 		log.Logf(0, "vm-%v: suppressed crash %v", crash.vmIndex, crash.Title)
 		mgr.stats.crashSuppressed.inc()
@@ -927,11 +946,18 @@ func (mgr *Manager) Connect(a *rpctype.ConnectArgs, r *rpctype.ConnectRes) error
 		}
 		// old fuzzer crashed
 		if oldf.callIdx != -1 && oldf.argIdx != -1 {
-			oldf.annotation[oldf.callIdx][oldf.argIdx] = 0
+			// oldf.annotation[oldf.callIdx][oldf.argIdx] = 0
+			// we need to compare the results before considering it
+			// mgr.objects vs f.objects
+			if !CompareReport(f.objects, mgr.objects) {
+				oldf.annotation[oldf.callIdx][oldf.argIdx] = -1 // magic number specifying we have crash
+			}
+
 		}
 		f.annotation = oldf.annotation
 		f.firstConnect = oldf.firstConnect
 	}
+	log.Logf(0, "+++++++++++++++++++++++++++++++++++%v %v\n", f.objects, mgr.objects)
 	log.Logf(0, "Connect: size2 %v", len(f.inputs))
 	r.EnabledCalls = mgr.enabledSyscalls
 	r.CheckResult = mgr.checkResult
@@ -1118,15 +1144,36 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 		if f.callIdx != -1 && f.argIdx != -1 {
 			//TO-DO: I can also check the log to see if there is any change
 			// If not, the mutated argument can also be considered as irrelevant
-			f.annotation[f.callIdx][f.argIdx] += 1
+			if f.annotation[f.callIdx][f.argIdx] != -1 { // if we had one crash before, do not change it
+				f.annotation[f.callIdx][f.argIdx] += 1
+			}
+			// Check annotation to see if we're done
+			done := true
+			for _, arr := range f.annotation {
+				for _, count := range arr {
+					if count != -1 && count < 3 {
+						//keep going
+						done = false
+						break
+					}
+				}
+				if !done {
+					break
+				}
+			}
+
+			if done {
+				log.Logf(0, "It's done")
+			}
 		}
+
 		log.Logf(0, "Annotation %v\n", f.annotation)
 		pos := make([]int, 2)
 		for {
-			log.Logf(0, "Mutate Once\n")
 			if p.RMutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
 				f.callIdx = pos[0]
 				f.argIdx = pos[1]
+				log.Logf(0, "Mutate Once: %d %d\n", f.callIdx, f.argIdx)
 				break
 			}
 		}
