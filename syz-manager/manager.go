@@ -948,16 +948,19 @@ func (mgr *Manager) Connect(a *rpctype.ConnectArgs, r *rpctype.ConnectRes) error
 		if oldf.callIdx != -1 && oldf.argIdx != -1 {
 			// oldf.annotation[oldf.callIdx][oldf.argIdx] = 0
 			// we need to compare the results before considering it
-			// mgr.objects vs f.objects
-			if !CompareReport(f.objects, mgr.objects) {
+			// mgr.objects vs oldf.objects
+			if !CompareReport(oldf.objects, mgr.objects) {
 				oldf.annotation[oldf.callIdx][oldf.argIdx] = -1 // magic number specifying we have crash
 			}
 
 		}
+		f.callIdx = oldf.callIdx
+		f.argIdx = oldf.argIdx
 		f.annotation = oldf.annotation
 		f.firstConnect = oldf.firstConnect
+		log.Logf(0, "+++++++++++++++++++++++++++++++++++%v %v\n", oldf.objects, mgr.objects)
 	}
-	log.Logf(0, "+++++++++++++++++++++++++++++++++++%v %v\n", f.objects, mgr.objects)
+	
 	log.Logf(0, "Connect: size2 %v", len(f.inputs))
 	r.EnabledCalls = mgr.enabledSyscalls
 	r.CheckResult = mgr.checkResult
@@ -1147,36 +1150,21 @@ func (mgr *Manager) Poll(a *rpctype.PollArgs, r *rpctype.PollRes) error {
 			if f.annotation[f.callIdx][f.argIdx] != -1 { // if we had one crash before, do not change it
 				f.annotation[f.callIdx][f.argIdx] += 1
 			}
-			// Check annotation to see if we're done
-			done := true
-			for _, arr := range f.annotation {
-				for _, count := range arr {
-					if count != -1 && count < 3 {
-						//keep going
-						done = false
-						break
-					}
-				}
-				if !done {
-					break
-				}
-			}
-
-			if done {
-				log.Logf(0, "It's done")
-			}
 		}
 
 		log.Logf(0, "Annotation %v\n", f.annotation)
 		pos := make([]int, 2)
-		for {
-			if p.RMutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
-				f.callIdx = pos[0]
-				f.argIdx = pos[1]
-				log.Logf(0, "Mutate Once: %d %d\n", f.callIdx, f.argIdx)
-				break
-			}
+		// for {
+		if p.RMutate(f.rnd, 30, nil, []*prog.Prog{}, f.annotation, &pos) {
+			f.callIdx = pos[0]
+			f.argIdx = pos[1]
+			log.Logf(0, "Mutate Once: %d %d\n", f.callIdx, f.argIdx)
+			// break
+		} else {
+			log.Logf(0, "Stop Mutation!!!!!!!!!!!!!!!!!!Done")
+			return nil
 		}
+		// }
 		log.Logf(0, "Annotation %v\n", f.annotation)
 		log.Logf(0, "Executing: %s\n", p.Serialize())
 		pos = nil

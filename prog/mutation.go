@@ -168,11 +168,38 @@ func available(annotation [][]int, callIdx int) int {
 	total := 0
 	threshold := 2
 	for _, count := range annotation[callIdx] {
-		if count <= threshold {
+		if count <= threshold && count >= 0 {
 			total += 1
 		}
 	}
 	return total
+}
+
+func randomCall(annotation [][]int, r *randGen) (int) {
+	arr := make([]int, 0)
+	for index, _ := range annotation {
+		if available(annotation, index) > 0 {
+			arr = append(arr, index)
+		}
+	}
+	if len(arr) == 0 {
+		return -1
+	}
+	return arr[r.Intn(len(arr))]
+}
+
+func randomArg(annotation [][]int, callIdx int, r *randGen) (int) {
+	arr := make([]int, 0)
+	threshold := 2
+	for index, num := range annotation[callIdx] {
+		if num <= threshold && num >= 0 {
+			arr = append(arr, index)
+		} 
+	}
+	if len(arr) == 0 {
+		return -1
+	}
+	return arr[r.Intn(len(arr))]
 }
 
 func canskip(annotation [][]int, callIdx int, argIdx int) bool {
@@ -189,16 +216,23 @@ func (ctx *mutator) rmutateArg(annotation [][]int, pos *[]int) bool {
 	if len(p.Calls) == 0 {
 		return false
 	}
-	callIdx := r.Intn(len(p.Calls))
-	(*pos)[0] = callIdx
+	// callIdx := r.Intn(len(p.Calls))
+	// (*pos)[0] = callIdx
+	// c := p.Calls[callIdx]
+	// // log.Logf(0, "Mutate Call: %s", c)
+	// if len(c.Args) == 0 {
+	// 	return false
+	// }
+	// if available(annotation, callIdx) == 0 {
+	// 	return false
+	// }
+	callIdx := randomCall(annotation, r)
+	if callIdx == -1 {
+		return false
+	}
+
 	c := p.Calls[callIdx]
-	// log.Logf(0, "Mutate Call: %s", c)
-	if len(c.Args) == 0 {
-		return false
-	}
-	if available(annotation, callIdx) == 0 {
-		return false
-	}
+	(*pos)[0] = callIdx
 	s := analyze(ctx.ct, p, c)
 	updateSizes := true
 	ok := false
@@ -213,11 +247,17 @@ func (ctx *mutator) rmutateArg(annotation [][]int, pos *[]int) bool {
 			return false
 		}
 		log.Logf(0, "Attempt %d %d", callIdx, len(ma.args))
-		idx = r.Intn(len(ma.args))
-		if canskip(annotation, callIdx, idx) {
+		// idx = r.Intn(len(ma.args))
+		// if canskip(annotation, callIdx, idx) {
+		// 	ok = false
+		// 	continue
+		// }
+		idx = randomArg(annotation, callIdx, r)
+		if idx == -1 {
 			ok = false
 			continue
 		}
+
 		arg, ctx := ma.args[idx], ma.ctxes[idx]
 		calls, ok1 := p.Target.mutateArg(r, s, arg, ctx, &updateSizes)
 		if !ok1 {
