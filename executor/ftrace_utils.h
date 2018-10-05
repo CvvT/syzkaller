@@ -40,19 +40,19 @@ static char *find_debugfs(void)
     return debugfs;
 }
 
-void enable_trace_kmem_cache_free()
-{
+void enable_trace(const char *event) {
 	char *debugfs;
 	char path[2048]={0};
 	int tmp_fd;
 	debugfs = find_debugfs();
 	if(debugfs){
 		strcpy(path, debugfs);
-		strcat(path, "/tracing/events/kmem/kmem_cache_free/enable");
+		strcat(path, event);
 		tmp_fd = open(path, O_WRONLY);
-		if(tmp_fd >= 0)
-			write(tmp_fd, "1", 1);
-		else{
+		if(tmp_fd >= 0) {
+			if (write(tmp_fd, "1", 1) <= 0)
+				perror("Write");
+		} else{
 			perror("open");
 		}
 	}
@@ -60,111 +60,31 @@ void enable_trace_kmem_cache_free()
 		printf("Can not find debugfs :(");
 	}
 	return;
+}
+
+void enable_trace_kmem_cache_free()
+{
+	enable_trace("/tracing/events/kmem/kmem_cache_free/enable");
 }
 void enable_trace_kfree()
 {
-	char *debugfs;
-	char path[2048]={0};
-	int tmp_fd;
-	debugfs = find_debugfs();
-	if(debugfs){
-		strcpy(path, debugfs);
-		strcat(path, "/tracing/events/kmem/kfree/enable");
-		tmp_fd = open(path, O_WRONLY);
-		if(tmp_fd >= 0)
-			write(tmp_fd, "1", 1);
-		else{
-			perror("open");
-		}
-	}
-	else{
-		printf("Can not find debugfs :(");
-	}
-	return;
+	enable_trace("/tracing/events/kmem/kfree/enable");
 }
 void enable_trace_kmalloc()
 {
-	char *debugfs;
-	char path[2048]={0};
-	int tmp_fd;
-	debugfs = find_debugfs();
-	if(debugfs){
-		strcpy(path, debugfs);
-		strcat(path, "/tracing/events/kmem/kmalloc/enable");
-		tmp_fd = open(path, O_WRONLY);
-		if(tmp_fd >= 0)
-			write(tmp_fd, "1", 1);
-		else{
-			perror("open");
-		}
-	}
-	else{
-		printf("Can not find debugfs :(");
-	}
-	return;
+	enable_trace("/tracing/events/kmem/kmalloc/enable");
 }
 void enable_trace_kmem_cache_alloc_node()
 {
-	char *debugfs;
-	char path[2048]={0};
-	int tmp_fd;
-	debugfs = find_debugfs();
-	if(debugfs){
-		strcpy(path, debugfs);
-		strcat(path, "/tracing/events/kmem/kmem_cache_alloc_node/enable");
-		tmp_fd = open(path, O_WRONLY);
-		if(tmp_fd >= 0)
-			write(tmp_fd, "1", 1);
-		else{
-			perror("open");
-		}
-	}
-	else{
-		printf("Can not find debugfs :(");
-	}
-	return;
+	enable_trace("/tracing/events/kmem/kmem_cache_alloc_node/enable");
 }
 void enable_trace_kmem_cache_alloc()
 {
-	char *debugfs;
-	char path[2048]={0};
-	int tmp_fd;
-	debugfs = find_debugfs();
-	if(debugfs){
-		strcpy(path, debugfs);
-		strcat(path, "/tracing/events/kmem/kmem_cache_alloc/enable");
-		tmp_fd = open(path, O_WRONLY);
-		if(tmp_fd >= 0)
-			write(tmp_fd, "1", 1);
-		else{
-			perror("open");
-		}
-	}
-	else{
-		printf("Can not find debugfs :(");
-	}
-	return;
+	enable_trace("/tracing/events/kmem/kmem_cache_alloc/enable");
 }
 void enable_trace_kmalloc_node()
 {
-	char *debugfs;
-	char path[2048]={0};
-	int tmp_fd;
-	debugfs = find_debugfs();
-	if(debugfs){
-		strcpy(path, debugfs);
-		strcat(path, "/tracing/events/kmem/kmalloc_node/enable");
-		tmp_fd = open(path, O_WRONLY);
-		if(tmp_fd >= 0)
-			write(tmp_fd, "1", 1);
-		else{
-			perror("open");
-		}
-	}
-	else{
-		printf("Can not find debugfs :(");
-	}
-	return;
+	enable_trace("/tracing/events/kmem/kmalloc_node/enable");
 }
 
 void init_marker_fd()
@@ -178,7 +98,8 @@ void init_marker_fd()
 		strcat(path, "/tracing/tracing_on");
 		trace_fd = open(path, O_WRONLY);
 		if(trace_fd >= 0)
-			write(trace_fd, "1", 1);
+			if (write(trace_fd, "1", 1) <= 0)
+				perror("Write");
 
 		strcpy(path, debugfs);
 		strcat(path, "/tracing/trace_marker");
@@ -193,14 +114,16 @@ void init_marker_fd()
 void write_marker_syscall_start(int idx){
 	char marker[100]={0};
 	sprintf(marker, "start calling syscall number: %d", idx);
-	write(marker_fd, marker, strlen(marker));
+	if (write(marker_fd, marker, strlen(marker)) != (int)strlen(marker))
+		perror("Write");
 	return;
 }
 
 void write_marker_syscall_end(int idx){
 	char marker[100]={0};
 	sprintf(marker, "finish calling syscall number: %d", idx);
-	write(marker_fd, marker, strlen(marker));
+	if (write(marker_fd, marker, strlen(marker)) != (int)strlen(marker))
+		perror("Write");
 	return;
 }
 
@@ -215,9 +138,32 @@ void dump_ftrace_atexit(){
 		strcat(path, "/tracing/tracing_on");
 		trace_fd = open(path, O_WRONLY);
 		if(trace_fd >=0 )
-			write(trace_fd, "0", 1);
+			if (write(trace_fd, "0", 1) <= 0)
+				perror("Write");
 	}
 	return;
+}
+
+void dump_ftrace() {
+	char* debugfs;
+	char path[256] = {0};
+	char *line = NULL;
+	FILE *trace_file;
+	size_t len = 0;
+	debugfs = find_debugfs();
+	if (debugfs) {
+		strcpy(path, debugfs);
+		strcat(path, "/tracing/trace_pipe");
+		if ((trace_file = fopen(path, "r")) >= 0) {
+			while (getline(&line, &len, trace_file) != -1) {
+				fprintf(stderr, "%s", line);
+			}
+			fflush(stderr);
+			fclose(trace_file);
+		}
+	}
+	if (line)
+		free(line);
 }
 
 void set_ftrace_buffer_size(){
@@ -230,7 +176,8 @@ void set_ftrace_buffer_size(){
 		strcat(path, "/tracing/buffer_size_kb");
 		tmp_fd = open(path, O_WRONLY);
 		if(trace_fd >=0 ){
-			write(trace_fd, "50000", 5);
+			if (write(trace_fd, "50000", 5) != 5)
+				perror("Write");
 			close(tmp_fd);	
 		}
 		else{
