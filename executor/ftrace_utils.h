@@ -144,26 +144,48 @@ void dump_ftrace_atexit(){
 	return;
 }
 
+static void output(const char* msg, ...)
+{
+	if (!flag_debug)
+		return;
+	va_list args;
+	va_start(args, msg);
+	vfprintf(stderr, msg, args);
+	va_end(args);
+	fflush(stderr);
+}
+
+static FILE *trace_file = NULL;
+static char *line = NULL;
 void dump_ftrace() {
 	char* debugfs;
 	char path[256] = {0};
-	char *line = NULL;
-	FILE *trace_file;
-	size_t len = 0;
-	debugfs = find_debugfs();
-	if (debugfs) {
-		strcpy(path, debugfs);
-		strcat(path, "/tracing/trace_pipe");
-		if ((trace_file = fopen(path, "r")) >= 0) {
-			while (getline(&line, &len, trace_file) != -1) {
-				fprintf(stderr, "%s", line);
+	size_t len = 512;
+	int nread;
+
+	if (trace_file == NULL) {
+		debugfs = find_debugfs();
+		if (debugfs) {
+			strcpy(path, debugfs);
+			strcat(path, "/tracing/trace");
+			if ((trace_file = fopen(path, "r")) < 0) {
+				output("Open trace_pipe error\n");
 			}
-			fflush(stderr);
-			fclose(trace_file);
+		} else {
+			output("Open debugfs failed\n");
 		}
+		line = (char*)malloc(len);
 	}
-	if (line)
-		free(line);
+
+	if (trace_file != NULL) {
+		while ((nread = getline(&line, &len, trace_file)) != -1) {
+			line[nread] = '\0';
+			output("%s", line);
+		}
+
+		fclose(trace_file);
+		trace_file = NULL;
+	}
 }
 
 void set_ftrace_buffer_size(){
@@ -200,4 +222,22 @@ error:
 		printf("failed to set ftrace_dump_on_oops");
 	}
 	return;
+}
+
+void set_trace_thread(pid_t pid) {
+	char path[512] = {0};
+	char *debugfs;
+	char line[64];
+	int fd = 0;
+	int s;
+	debugfs = find_debugfs();
+	if (debugfs) {
+		sprintf(path, "%s/%s", debugfs, "tracing/set_event_pid");
+		if ((fd = open(path, O_WRONLY)) > 0) {
+			s = sprintf(line, "%d\n", pid);
+			if (write(fd, line, s) <= 0)
+				printf("failed to write\n");
+			close(fd);
+		}
+	}
 }

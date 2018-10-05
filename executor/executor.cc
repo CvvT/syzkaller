@@ -313,6 +313,7 @@ static void setup_control_pipes();
 #endif
 
 #include "test.h"
+#include "ftrace_utils.h"
 
 int main(int argc, char** argv)
 {
@@ -362,6 +363,16 @@ int main(int argc, char** argv)
 		}
 	}
 
+	// debug("+++++++++++++++++++++++++++Start Ftrace++++++++++++++++++++++++++++++\n");
+	// set_ftrace_buffer_size();
+	// init_marker_fd();
+	// enable_trace_kmalloc();
+	// enable_trace_kmalloc_node();
+	// enable_trace_kmem_cache_alloc_node();
+
+	// enable_trace_kfree();
+	// enable_trace_kmem_cache_alloc();
+
 	int status = 0;
 	switch (flag_sandbox) {
 	case sandbox_none:
@@ -380,6 +391,10 @@ int main(int argc, char** argv)
 	default:
 		fail("unknown sandbox type");
 	}
+
+	// debug("+++++++++++++++++++++++++++Stop Ftrace+++++++++++++++++++++++++++++++\n");
+	// dump_ftrace_atexit();
+
 #if SYZ_EXECUTOR_USES_FORK_SERVER
 	// Other statuses happen when fuzzer processes manages to kill loop.
 	if (status != kFailStatus && status != kErrorStatus)
@@ -936,6 +951,9 @@ void execute_call(thread_t* th)
 {
 	const call_t* call = &syscalls[th->call_num];
 	debug("#%d: %s(", th->id, call->name);
+
+	// set_trace_thread(getpid());
+
 	for (int i = 0; i < th->num_args; i++) {
 		if (i != 0)
 			debug(", ");
@@ -975,6 +993,9 @@ void execute_call(thread_t* th)
 		debug("#%d: %s = errno(%d)\n", th->id, call->name, th->reserrno);
 	else
 		debug("#%d: %s = 0x%lx\n", th->id, call->name, th->res);
+
+	// debug("++++++++++++++++++++++++Dump Ftrace+++++++++++++++++++++++++++++\n");
+	// dump_ftrace();
 }
 
 #if SYZ_EXECUTOR_USES_SHMEM
