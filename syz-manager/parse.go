@@ -42,7 +42,9 @@ func AnalyzeReport(data []byte) ([]Obj) {
 	var entries []*prog.LogEntry
 	entries = target.ParseLog(data)
 	// The last one is what we want
-	fmt.Printf("Prog %s", entries[len(entries)-1].P.Serialize())
+	if (len(entries) != 0) {
+		fmt.Printf("Prog %s", entries[len(entries)-1].P.Serialize())
+	}
 
 	cont := string(data)
 	writes := &Mem{make([]Obj, 0), nil}

@@ -5,6 +5,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
+#include <pthread.h>
 #define MAX_PATH 256
 #define _STR(x) #x
 #define STR(x) _STR(x)
@@ -145,6 +146,19 @@ void dump_ftrace_atexit(){
 	return;
 }
 
+int fd_set_blocking(int fd, int blocking) {
+    /* Save the current flags */
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1)
+        return 0;
+
+    if (blocking)
+        flags &= ~O_NONBLOCK;
+    else
+        flags |= O_NONBLOCK;
+    return fcntl(fd, F_SETFL, flags) != -1;
+}
+
 void dump_ftrace() {
 	char* debugfs;
 	char path[256] = {0};
@@ -158,6 +172,7 @@ void dump_ftrace() {
 		strcat(path, "/tracing/trace_pipe");
 		printf("path: %s\n", path);
 		if ((trace_file = fopen(path, "r")) >= 0) {
+			fd_set_blocking(fileno(trace_file), 0);
 			printf("open file\n");
 			while (getline(&line, &len, trace_file) != -1) {
 				printf("%s", line);
@@ -206,10 +221,54 @@ error:
 	return;
 }
 
+void set_trace_thread(pid_t pid) {
+	char path[512] = {0};
+	char *debugfs;
+	char line[512];
+	int fd = 0;
+	int s;
+	debugfs = find_debugfs();
+	if (debugfs) {
+		sprintf(path, "%s/%s", debugfs, "tracing/set_event_pid");
+		if ((fd = open(path, O_RDONLY)) > 0) {
+			if ((s = read(fd, line, 512)) == -1) {
+				perror("read error");
+				return;
+			}
+			line[s] = '\0';
+			if (s > 0 && line[s-1] == '\n') {
+				line[s-1] = '\0';
+			}
+			printf("[IN]%s\n", line);
+			s = sprintf(line, "%s %d", line, pid);
+			printf("[Out]%s\n", line);
+
+
+			close(fd);
+			if ((fd = open(path, O_WRONLY)) < 0) {
+				perror("Open Error\n");
+				return;
+			}
+			if (write(fd, line, s) <= 0)
+				perror("failed to write\n");
+			close(fd);
+		}
+	}
+}
+
+void *new_thread(void *argv) {
+	printf("my pid: %d\n", getpid());
+	set_trace_thread(getpid());
+	dump_ftrace();
+}
 
 int main(void) {
 	set_ftrace_buffer_size();
 	init_marker_fd();
+	
+	printf("main pid: %d\n", getpid());
+	set_trace_thread(getpid());
+
 	enable_trace_kmalloc();
 	enable_trace_kmalloc_node();
 	enable_trace_kmem_cache_alloc_node();
@@ -217,6 +276,20 @@ int main(void) {
 	enable_trace_kfree();
 	enable_trace_kmem_cache_alloc();
 
-	dump_ftrace();
+	pthread_t thr;
+	pthread_create(&thr, NULL, new_thread, NULL);
+	pthread_join(thr, NULL);
+	printf("quit\n");
+	
+	// set_trace_thread(0);
+
+	// printf("one\n");
+	// dump_ftrace();
+	// sleep(5);
+	// printf("two\n");
+	// dump_ftrace();
+	// printf("three");
+	// sleep(10);
+	
 	dump_ftrace_atexit();
 }

@@ -227,14 +227,21 @@ error:
 void set_trace_thread(pid_t pid) {
 	char path[512] = {0};
 	char *debugfs;
-	char line[64];
+	char line[512];
 	int fd = 0;
 	int s;
 	debugfs = find_debugfs();
 	if (debugfs) {
 		sprintf(path, "%s/%s", debugfs, "tracing/set_event_pid");
 		if ((fd = open(path, O_WRONLY)) > 0) {
-			s = sprintf(line, "%d\n", pid);
+			if ((s = read(fd, line, 512)) == -1) {
+				output("read error");
+				return;
+			}
+			line[s] = '\0';
+			output("[IN]%s\n", line);
+			s = sprintf(line, "%s %d\n", line, pid);
+			output("[Out]%s\n", line);
 			if (write(fd, line, s) <= 0)
 				printf("failed to write\n");
 			close(fd);
