@@ -38,6 +38,8 @@ type Options struct {
 	// which allows to detect hangs.
 	Repro bool `json:"repro,omitempty"`
 	Trace bool `json:"trace,omitempty"`
+	//s2e
+	S2E bool `json:"s2e,omitempty"`
 }
 
 // Check checks if the opts combination is valid or not.

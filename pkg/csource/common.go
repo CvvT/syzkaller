@@ -30,7 +30,13 @@ func createCommonHeader(p, mmapProg *prog.Prog, replacements map[string]string, 
 	for _, def := range defines {
 		cmd.Args = append(cmd.Args, "-D"+def)
 	}
-	cmd.Stdin = strings.NewReader(commonHeader)
+
+	if (opts.S2E) {
+		cmd.Stdin = strings.NewReader(S2EcommonHeader)
+	} else {
+		cmd.Stdin = strings.NewReader(commonHeader)
+	}
+	
 	stderr := new(bytes.Buffer)
 	stdout := new(bytes.Buffer)
 	cmd.Stderr = stderr

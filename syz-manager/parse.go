@@ -30,7 +30,39 @@ type Obj struct {
 	base_addr  uint64
 }
 
+// Analyze Debug Report
+// syz-executor0-2711  [000] ....    17.294958: kmalloc: call_site=ffffffff813c8fd6 ptr=ffff88005ee19a80 bytes_req=64 bytes_alloc=96 gfp_flags=GFP_KERNEL
+// syz-executor0-2711  [000] ....    17.295150: kfree: call_site=ffffffff816a1b7d ptr=          (null)
+// kmem_cache_free kfree
+// kmalloc kmem_cache_alloc_node kmem_cache_alloc kmalloc_node
+func AnalyzeFtrace(data []byte) {
+	cont := string(data)
+	lines := strings.Split(cont, "\n")
+	// r, err := regexp.Compile("[a-z0-9-]+-[0-9]+  \\[[0-9]+\\] .+    [0-9\\.]+: ([~:]+): call_site=([0-9a-f]+) ptr=([0-9a-f]+)")
+	r, err := regexp.Compile("[a-z0-9-]+-[0-9]+  \\[[0-9]+\\] ....    [0-9\\.]+: ([^:]+): call_site=([0-9a-f]+) ptr=([0-9a-f]+)")
+	if err != nil {
+		fmt.Print("Compile error")
+		return
+	}
+	for _, line := range lines {
+		match := r.FindStringSubmatch(line)
+		if len(match) == 4 {
+			// fmt.Printf("Found: %s %s\n", match[1], match[3])
+			addr, err := strconv.ParseUint(match[3], 16, 64)
+			if err != nil {
+				fmt.Printf("ParseInt error %s\n", err)
+				continue
+			}
+			// if match[1] == "kfree" || match[1] == "kmem_cache_free" {
+			// 	continue
+			// }
+			fmt.Printf("Func: %s ptr: 0x%x\n", match[1], addr)
+			break
+		}
+	}
+}
 
+// Analyze Crash Report
 func AnalyzeReport(data []byte) ([]Obj) {
 
 	target, err := prog.GetTarget("linux", runtime.GOARCH)

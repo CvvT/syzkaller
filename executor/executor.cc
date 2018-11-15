@@ -365,10 +365,12 @@ int main(int argc, char** argv)
 
 	debug("+++++++++++++++++++++++++++Start Ftrace++++++++++++++++++++++++++++++\n");
 	set_ftrace_buffer_size();
+	set_trace_thread(getpid());
 	init_marker_fd();
 	enable_trace_kmalloc();
 	enable_trace_kmalloc_node();
 	enable_trace_kmem_cache_alloc_node();
+	enalbe_trace_mm_page_alloc();
 
 	enable_trace_kfree();
 	enable_trace_kmem_cache_alloc();
@@ -951,8 +953,6 @@ void execute_call(thread_t* th)
 {
 	const call_t* call = &syscalls[th->call_num];
 	debug("#%d: %s(", th->id, call->name);
-
-	set_trace_thread(getpid());
 
 	for (int i = 0; i < th->num_args; i++) {
 		if (i != 0)

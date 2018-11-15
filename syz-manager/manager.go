@@ -626,7 +626,7 @@ func (mgr *Manager) saveCrash(crash *Crash) bool {
 		}
 		f.objects = results
 	}
-	
+	AnalyzeFtrace(crash.Output)
 
 	if crash.Suppressed {
 		log.Logf(0, "vm-%v: suppressed crash %v", crash.vmIndex, crash.Title)

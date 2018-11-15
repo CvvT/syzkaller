@@ -87,6 +87,10 @@ void enable_trace_kmalloc_node()
 	enable_trace("/tracing/events/kmem/kmalloc_node/enable");
 }
 
+void enalbe_trace_mm_page_alloc() {
+	enable_trace("/tracing/events/kmem/mm_page_alloc/enable");
+}
+
 void init_marker_fd()
 {
 	char *debugfs;
@@ -146,13 +150,24 @@ void dump_ftrace_atexit(){
 
 static void output(const char* msg, ...)
 {
-	if (!flag_debug)
-		return;
 	va_list args;
 	va_start(args, msg);
 	vfprintf(stderr, msg, args);
 	va_end(args);
 	fflush(stderr);
+}
+
+int fd_set_blocking(int fd, int blocking) {
+    /* Save the current flags */
+    int flags = fcntl(fd, F_GETFL, 0);
+    if (flags == -1)
+        return 0;
+
+    if (blocking)
+        flags &= ~O_NONBLOCK;
+    else
+        flags |= O_NONBLOCK;
+    return fcntl(fd, F_SETFL, flags) != -1;
 }
 
 static FILE *trace_file = NULL;
@@ -171,6 +186,7 @@ void dump_ftrace() {
 			if ((trace_file = fopen(path, "r")) < 0) {
 				output("Open trace_pipe error\n");
 			}
+			fd_set_blocking(fileno(trace_file), 0);
 		} else {
 			output("Open debugfs failed\n");
 		}
@@ -224,6 +240,19 @@ error:
 	return;
 }
 
+int contains(char *line, int pid) {
+	char pid_str[12] = {0};
+	char *token = strtok(line, " ");
+
+	sprintf(pid_str, "%d", pid);
+	while (token != NULL) {
+		if (!strcmp(token, pid_str))
+			return 1;
+		token = strtok(NULL, " ");
+	}
+	return 0;
+}
+
 void set_trace_thread(pid_t pid) {
 	char path[512] = {0};
 	char *debugfs;
@@ -233,17 +262,31 @@ void set_trace_thread(pid_t pid) {
 	debugfs = find_debugfs();
 	if (debugfs) {
 		sprintf(path, "%s/%s", debugfs, "tracing/set_event_pid");
-		if ((fd = open(path, O_WRONLY)) > 0) {
+		if ((fd = open(path, O_RDONLY)) > 0) {
 			if ((s = read(fd, line, 512)) == -1) {
-				output("read error");
+				perror("read error");
 				return;
 			}
 			line[s] = '\0';
-			output("[IN]%s\n", line);
-			s = sprintf(line, "%s %d\n", line, pid);
-			output("[Out]%s\n", line);
+			if (s > 0 && line[s-1] == '\n') {
+				line[s-1] = '\0';
+			}
+			close(fd);
+
+			printf("[IN]%s\n", line);
+			if (contains(line, pid)) {
+				return;
+			}
+
+			s = sprintf(line, "%s %d", line, pid);
+			printf("[Out]%s\n", line);
+			
+			if ((fd = open(path, O_WRONLY)) < 0) {
+				perror("Open Error\n");
+				return;
+			}
 			if (write(fd, line, s) <= 0)
-				printf("failed to write\n");
+				perror("failed to write\n");
 			close(fd);
 		}
 	}

@@ -357,7 +357,7 @@ func (inst *instance) Boot() error {
 	// Start output merger.
 	var tee io.Writer
 	if inst.debug {
-		tee = os.Stdout
+		// tee = os.Stdout
 	}
 	inst.merger = vmimpl.NewOutputMerger(tee)
 	inst.merger.Add("qemu", inst.rpipe)

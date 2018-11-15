@@ -248,6 +248,13 @@ func (mon *monitor) extractError(defaultError string) *report.Report {
 	rep.Output = mon.output[start:end]
 	rep.StartPos += mon.matchPos - start
 	rep.EndPos += mon.matchPos - start
+
+	// f, err := os.Create("tmp.txt")
+	// if err == nil {
+	// 	f.Write(mon.output)
+	// 	f.Close()
+	// }
+
 	return rep
 }
 

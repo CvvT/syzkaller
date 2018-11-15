@@ -34,6 +34,7 @@ var (
 	flagResetNet   = flag.Bool("resetnet", false, "reset net namespace after each test")
 	flagHandleSegv = flag.Bool("segv", false, "catch and ignore SIGSEGV")
 	flagTrace      = flag.Bool("trace", false, "trace syscall results")
+	flagS2E		   = flag.Bool("s2e", false, "make concolic")
 )
 
 func main() {
@@ -75,6 +76,7 @@ func main() {
 		HandleSegv:    *flagHandleSegv,
 		Repro:         false,
 		Trace:         *flagTrace,
+		S2E:		   *flagS2E,
 	}
 	src, err := csource.Write(p, opts)
 	if err != nil {

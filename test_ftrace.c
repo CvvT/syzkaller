@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <pthread.h>
+#include <stdarg.h>
 #define MAX_PATH 256
 #define _STR(x) #x
 #define STR(x) _STR(x)
@@ -88,6 +89,9 @@ void enable_trace_kmalloc_node()
 {
 	enable_trace("/tracing/events/kmem/kmalloc_node/enable");
 }
+void enalbe_trace_mm_page_alloc() {
+	enable_trace("/tracing/events/kmem/mm_page_alloc/enable");
+}
 
 void init_marker_fd()
 {
@@ -159,6 +163,21 @@ int fd_set_blocking(int fd, int blocking) {
     return fcntl(fd, F_SETFL, flags) != -1;
 }
 
+int fd_kmsg = -1;
+static void output(char* msg)
+{
+	if (fd_kmsg <= 0) {
+		if ((fd_kmsg = open("/dev/kmsg", O_WRONLY)) <= 0)
+			perror("Open kmsg");
+	}
+	if (fd_kmsg > 0) {
+		printf("%s\n", msg);
+		if (write(fd_kmsg, msg, strlen(msg)) < 0)
+			perror("Write kmsg");
+	}
+	// fflush(stderr);
+}
+
 void dump_ftrace() {
 	char* debugfs;
 	char path[256] = {0};
@@ -175,9 +194,9 @@ void dump_ftrace() {
 			fd_set_blocking(fileno(trace_file), 0);
 			printf("open file\n");
 			while (getline(&line, &len, trace_file) != -1) {
-				printf("%s", line);
+				output(line);
 			}
-			fflush(stderr);
+			// fflush(stderr);
 			fclose(trace_file);
 		}
 	}
@@ -221,6 +240,19 @@ error:
 	return;
 }
 
+int contains(char *line, int pid) {
+	char pid_str[12] = {0};
+	char *token = strtok(line, " ");
+
+	sprintf(pid_str, "%d", pid);
+	while (token != NULL) {
+		if (!strcmp(token, pid_str))
+			return 1;
+		token = strtok(NULL, " ");
+	}
+	return 0;
+}
+
 void set_trace_thread(pid_t pid) {
 	char path[512] = {0};
 	char *debugfs;
@@ -239,12 +271,16 @@ void set_trace_thread(pid_t pid) {
 			if (s > 0 && line[s-1] == '\n') {
 				line[s-1] = '\0';
 			}
+			close(fd);
+
 			printf("[IN]%s\n", line);
+			if (contains(line, pid)) {
+				return;
+			}
+
 			s = sprintf(line, "%s %d", line, pid);
 			printf("[Out]%s\n", line);
-
-
-			close(fd);
+			
 			if ((fd = open(path, O_WRONLY)) < 0) {
 				perror("Open Error\n");
 				return;
@@ -264,10 +300,11 @@ void *new_thread(void *argv) {
 
 int main(void) {
 	set_ftrace_buffer_size();
+	set_trace_thread(getpid());
+
 	init_marker_fd();
 	
 	printf("main pid: %d\n", getpid());
-	set_trace_thread(getpid());
 
 	enable_trace_kmalloc();
 	enable_trace_kmalloc_node();

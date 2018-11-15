@@ -2,7 +2,7 @@
 
 package csource
 
-var commonHeader = `
+var S2EcommonHeader = `
 
 
 #ifndef _GNU_SOURCE
@@ -2999,59 +2999,11 @@ static void loop();
 
 static void sandbox_common()
 {
-	prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
-	setpgrp();
-	setsid();
-
-#if SYZ_EXECUTOR || __NR_syz_init_net_socket
-	int netns = open("/proc/self/ns/net", O_RDONLY);
-	if (netns == -1)
-		fail("open(/proc/self/ns/net) failed");
-	if (dup2(netns, kInitNetNsFd) < 0)
-		fail("dup2(netns, kInitNetNsFd) failed");
-	close(netns);
-#endif
-
-	struct rlimit rlim;
-	rlim.rlim_cur = rlim.rlim_max = 160 << 20;
-	setrlimit(RLIMIT_AS, &rlim);
-	rlim.rlim_cur = rlim.rlim_max = 8 << 20;
-	setrlimit(RLIMIT_MEMLOCK, &rlim);
-	rlim.rlim_cur = rlim.rlim_max = 136 << 20;
-	setrlimit(RLIMIT_FSIZE, &rlim);
-	rlim.rlim_cur = rlim.rlim_max = 1 << 20;
-	setrlimit(RLIMIT_STACK, &rlim);
-	rlim.rlim_cur = rlim.rlim_max = 0;
-	setrlimit(RLIMIT_CORE, &rlim);
-	rlim.rlim_cur = rlim.rlim_max = 256;
-	setrlimit(RLIMIT_NOFILE, &rlim);
-	if (unshare(CLONE_NEWNS)) {
-		debug("unshare(CLONE_NEWNS): %d\n", errno);
-	}
-	if (unshare(CLONE_NEWIPC)) {
-		debug("unshare(CLONE_NEWIPC): %d\n", errno);
-	}
-	if (unshare(0x02000000)) {
-		debug("unshare(CLONE_NEWCGROUP): %d\n", errno);
-	}
-	if (unshare(CLONE_NEWUTS)) {
-		debug("unshare(CLONE_NEWUTS): %d\n", errno);
-	}
-	if (unshare(CLONE_SYSVSEM)) {
-		debug("unshare(CLONE_SYSVSEM): %d\n", errno);
+	if (unshare(CLONE_NEWUSER)) {
+		debug("unshare(CLONE_NEWUSER): %d\n", errno);
 	}
 }
 
-int wait_for_loop(int pid)
-{
-	if (pid < 0)
-		fail("sandbox fork failed");
-	debug("spawned loop pid %d\n", pid);
-	int status = 0;
-	while (waitpid(-1, &status, __WALL) != pid) {
-	}
-	return WEXITSTATUS(status);
-}
 #endif
 
 #if SYZ_EXECUTOR || SYZ_SANDBOX_NONE
@@ -3131,7 +3083,6 @@ static int do_sandbox_setuid(void)
 
 static int real_uid;
 static int real_gid;
-__attribute__((aligned(64 << 10))) static char sandbox_stack[1 << 20];
 
 static int namespace_sandbox_proc(void* arg)
 {
@@ -3150,70 +3101,6 @@ static int namespace_sandbox_proc(void* arg)
 	initialize_netdevices();
 #endif
 
-	if (mkdir("./syz-tmp", 0777))
-		fail("mkdir(syz-tmp) failed");
-	if (mount("", "./syz-tmp", "tmpfs", 0, NULL))
-		fail("mount(tmpfs) failed");
-	if (mkdir("./syz-tmp/newroot", 0777))
-		fail("mkdir failed");
-	if (mkdir("./syz-tmp/newroot/dev", 0700))
-		fail("mkdir failed");
-	unsigned bind_mount_flags = MS_BIND | MS_REC | MS_PRIVATE;
-	if (mount("/dev", "./syz-tmp/newroot/dev", NULL, bind_mount_flags, NULL))
-		fail("mount(dev) failed");
-	if (mkdir("./syz-tmp/newroot/proc", 0700))
-		fail("mkdir failed");
-	if (mount(NULL, "./syz-tmp/newroot/proc", "proc", 0, NULL))
-		fail("mount(proc) failed");
-	if (mkdir("./syz-tmp/newroot/selinux", 0700))
-		fail("mkdir failed");
-	const char* selinux_path = "./syz-tmp/newroot/selinux";
-	if (mount("/selinux", selinux_path, NULL, bind_mount_flags, NULL)) {
-		if (errno != ENOENT)
-			fail("mount(/selinux) failed");
-		if (mount("/sys/fs/selinux", selinux_path, NULL, bind_mount_flags, NULL) && errno != ENOENT)
-			fail("mount(/sys/fs/selinux) failed");
-	}
-	if (mkdir("./syz-tmp/newroot/sys", 0700))
-		fail("mkdir failed");
-	if (mount("/sys", "./syz-tmp/newroot/sys", 0, bind_mount_flags, NULL))
-		fail("mount(sysfs) failed");
-#if SYZ_EXECUTOR || SYZ_ENABLE_CGROUPS
-	if (mkdir("./syz-tmp/newroot/syzcgroup", 0700))
-		fail("mkdir failed");
-	if (mkdir("./syz-tmp/newroot/syzcgroup/unified", 0700))
-		fail("mkdir failed");
-	if (mkdir("./syz-tmp/newroot/syzcgroup/cpu", 0700))
-		fail("mkdir failed");
-	if (mkdir("./syz-tmp/newroot/syzcgroup/net", 0700))
-		fail("mkdir failed");
-	if (mount("/syzcgroup/unified", "./syz-tmp/newroot/syzcgroup/unified", NULL, bind_mount_flags, NULL)) {
-		debug("mount(cgroup2, MS_BIND) failed: %d\n", errno);
-	}
-	if (mount("/syzcgroup/cpu", "./syz-tmp/newroot/syzcgroup/cpu", NULL, bind_mount_flags, NULL)) {
-		debug("mount(cgroup/cpu, MS_BIND) failed: %d\n", errno);
-	}
-	if (mount("/syzcgroup/net", "./syz-tmp/newroot/syzcgroup/net", NULL, bind_mount_flags, NULL)) {
-		debug("mount(cgroup/net, MS_BIND) failed: %d\n", errno);
-	}
-#endif
-	if (mkdir("./syz-tmp/pivot", 0777))
-		fail("mkdir failed");
-	if (syscall(SYS_pivot_root, "./syz-tmp", "./syz-tmp/pivot")) {
-		debug("pivot_root failed\n");
-		if (chdir("./syz-tmp"))
-			fail("chdir failed");
-	} else {
-		debug("pivot_root OK\n");
-		if (chdir("/"))
-			fail("chdir failed");
-		if (umount2("./pivot", MNT_DETACH))
-			fail("umount failed");
-	}
-	if (chroot("./newroot"))
-		fail("chroot failed");
-	if (chdir("/"))
-		fail("chdir failed");
 	struct __user_cap_header_struct cap_hdr = {};
 	struct __user_cap_data_struct cap_data[2] = {};
 	cap_hdr.version = _LINUX_CAPABILITY_VERSION_3;
@@ -3236,15 +3123,11 @@ static int namespace_sandbox_proc(void* arg)
 
 static int do_sandbox_namespace(void)
 {
-	int pid;
-
 	setup_common();
 	real_uid = getuid();
 	real_gid = getgid();
-	mprotect(sandbox_stack, 4096, PROT_NONE);
-	pid = clone(namespace_sandbox_proc, &sandbox_stack[sizeof(sandbox_stack) - 64],
-		    CLONE_NEWUSER | CLONE_NEWPID, 0);
-	return wait_for_loop(pid);
+	namespace_sandbox_proc(NULL);
+	return 0;
 }
 #endif
 
