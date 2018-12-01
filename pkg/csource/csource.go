@@ -252,7 +252,7 @@ func (ctx *context) emitCall(ow *bytes.Buffer, call prog.ExecCall, ci int, haveC
 						panic("sring format in syscall argument")
 					}
 					// vars: local variable definition; val: local variable or real value 
-					var_def, val, size := ctx.constArgToVar(arg, s2e_arg)
+					var_def, val, size := ctx.constArgToVar(arg, s2e_arg, s2e_call.Args)
 					if var_def != "" { // we got a meaningful variable 
 						local_vars = append(local_vars, var_def)
 					}
@@ -441,7 +441,25 @@ func (ctx *context) constArgToStr(arg prog.ExecArgConst) string {
 	return val
 }
 
-func (ctx *context) constArgToVar(arg prog.ExecArgConst, s2e_arg prog.Arg) (string, string, string) {
+func (ctx *context) symoblicSize(s2e_arg *prog.LenType, parent []prog.Arg) (bool) {
+	for _, field := range parent {
+		if s2e_arg.Buf != field.Type().FieldName() {
+			continue
+		}
+		if inner := prog.InnerArg(field); inner != nil {
+			switch targetType := inner.Type().(type) {
+			case *prog.BufferType:
+				fmt.Printf("BufferType type\n")
+				return true
+			default:
+				fmt.Printf("Type: %v\n", targetType);
+			}
+		}
+	}
+	return false
+}
+
+func (ctx *context) constArgToVar(arg prog.ExecArgConst, s2e_arg prog.Arg, parent []prog.Arg) (string, string, string) {
 	var_name, def, size := "", "", ""
 	val := ctx.constArgToStr(arg)
 
@@ -450,12 +468,16 @@ func (ctx *context) constArgToVar(arg prog.ExecArgConst, s2e_arg prog.Arg) (stri
 	// case *prog.UnionType:
 	// case *prog.ArrayType:
 	// case *prog.CsumType:
-	// case *prog.ConstType:
+	case *prog.ConstType:
+		fmt.Printf("Const: %v\n", mytype);
 	// case *prog.BufferType:
 	// case *VmaType:
 	// case *ProcType:
 	case *prog.LenType:
 		fmt.Printf("Len: %v\n", mytype)
+		if (!ctx.symoblicSize(mytype, parent)) {
+			break
+		}
 		var_name = ctx.assignVar()
 		def = fmt.Sprintf("\t%s %s = %s;", ctx.gettype(arg), var_name, val)
 		val = var_name
@@ -464,8 +486,18 @@ func (ctx *context) constArgToVar(arg prog.ExecArgConst, s2e_arg prog.Arg) (stri
 		fmt.Printf("Resource: %v\n", mytype)		
 	case *prog.PtrType:
 		fmt.Printf("Pointer: %v\n", mytype)
+		if mytype.Dir() == prog.DirOut {
+			fmt.Printf("Dir: out\n")
+			break
+		}
 		a := s2e_arg.(*prog.PointerArg)
-		size = fmt.Sprintf("%v", a.Res.Size())
+		// Might we need analyse a.Res further. If a.Res is a buffer,
+		// it needs special process.
+		if a.Res.Size() != 0 {
+			size = fmt.Sprintf("%v", a.Res.Size())
+		} else {
+			size = "32"
+		}
 	case *prog.FlagsType:
 		fmt.Printf("Flags: %v\n", mytype)
 	default:

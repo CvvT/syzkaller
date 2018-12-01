@@ -363,17 +363,17 @@ int main(int argc, char** argv)
 		}
 	}
 
-	debug("+++++++++++++++++++++++++++Start Ftrace++++++++++++++++++++++++++++++\n");
-	set_ftrace_buffer_size();
-	set_trace_thread(getpid());
-	init_marker_fd();
-	enable_trace_kmalloc();
-	enable_trace_kmalloc_node();
-	enable_trace_kmem_cache_alloc_node();
-	enalbe_trace_mm_page_alloc();
+	// debug("+++++++++++++++++++++++++++Start Ftrace++++++++++++++++++++++++++++++\n");
+	// set_ftrace_buffer_size();
+	// set_trace_thread(getpid());
+	// init_marker_fd();
+	// enable_trace_kmalloc();
+	// enable_trace_kmalloc_node();
+	// enable_trace_kmem_cache_alloc_node();
+	// enalbe_trace_mm_page_alloc();
 
-	enable_trace_kfree();
-	enable_trace_kmem_cache_alloc();
+	// enable_trace_kfree();
+	// enable_trace_kmem_cache_alloc();
 
 	int status = 0;
 	switch (flag_sandbox) {
