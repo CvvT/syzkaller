@@ -35,6 +35,7 @@ var (
 	flagHandleSegv = flag.Bool("segv", false, "catch and ignore SIGSEGV")
 	flagTrace      = flag.Bool("trace", false, "trace syscall results")
 	flagS2E		   = flag.Bool("s2e", false, "make concolic")
+	flagExploit    = flag.String("exploit", "", "generate exploit")
 )
 
 func main() {
@@ -77,6 +78,7 @@ func main() {
 		Repro:         false,
 		Trace:         *flagTrace,
 		S2E:		   *flagS2E,
+		Exploit:       *flagExploit,
 	}
 	src, err := csource.Write(p, opts)
 	if err != nil {
