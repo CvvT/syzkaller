@@ -1,0 +1,7 @@
+	int i;
+	for (i = 0; i < %d; i++) {
+		int s = syscall(__NR_socket, 0x11, 2, htobe16(0x0806));
+		if (s == -1) {
+			fail("[-] socket(SOCK_DGRAM)");
+		}
+	}

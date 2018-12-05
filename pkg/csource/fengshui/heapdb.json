@@ -1,0 +1,21 @@
+{
+	"heapobj": [
+		{
+			"sizes": {
+				"4.9.3-4.9.3": "x == 2048"
+			},
+			"varlen": false,
+			"name": "packet_sock",
+			"allocator": "slab"
+		},
+		{
+			"sizes": {
+				"4.9.3-4.9.3": "x % 0x1000 == 0"
+			},
+			"varlen": true,
+			"name": "pgv",
+			"allocator": "page"
+		}
+	]
+}
+

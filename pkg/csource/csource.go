@@ -12,9 +12,12 @@ import (
 	"strings"
 	"encoding/json"
 	"io/ioutil"
+	"path/filepath"
 
 	"github.com/CvvT/syzkaller/prog"
 	"github.com/CvvT/syzkaller/sys/targets"
+
+	"github.com/Knetic/govaluate"
 )
 
 func Write(p *prog.Prog, opts Options) ([]byte, error) {
@@ -28,15 +31,19 @@ func Write(p *prog.Prog, opts Options) ([]byte, error) {
 		sysTarget: targets.Get(p.Target.OS, p.Target.Arch),
 		calls:     make(map[string]uint64),
 		num_vars:  0,
-		testcase:  make(map[string][]uint8),
 	}
 	// Load testcase
 	if ctx.opts.Exploit != "" {
-		answerFile, err := ioutil.ReadFile(ctx.opts.Exploit);
+		configuration, err := ioutil.ReadFile(ctx.opts.Exploit);
+		if err != nil {
+			panic("failed to load config file");
+		}
+		json.Unmarshal([]byte(configuration), &ctx.exploit)
+		Answerfile, err := ioutil.ReadFile(ctx.exploit.Answer)
 		if err != nil {
 			panic("failed to load answer file");
 		}
-		json.Unmarshal([]byte(answerFile), &ctx.testcase)
+		json.Unmarshal([]byte(Answerfile), &ctx.testcase)
 	}
 
 	calls, vars, err := ctx.generateProgCalls(ctx.p, opts.Trace)
@@ -84,6 +91,7 @@ func Write(p *prog.Prog, opts Options) ([]byte, error) {
 		"SANDBOX_FUNC":    sandboxFunc,
 		"RESULTS":         varsBuf.String(),
 		"SYSCALLS":        ctx.generateSyscalls(calls, len(vars) != 0),
+		"FENGSHUI":        ctx.generateFengshui(),
 	}
 	if !opts.Threaded && !opts.Repeat && opts.Sandbox == "" {
 		// This inlines syscalls right into main for the simplest case.
@@ -112,6 +120,82 @@ type context struct {
 	calls     map[string]uint64 // CallName -> NR
 	num_vars  uint32
 	testcase  map[string][]uint8
+	exploit   HeapExploit
+}
+
+func (ctx *context) generateAllocation(objs *Fengshui, tgtSize int, tgtalloc, funcName string, total int) string {
+	tgtVersion := getVersion(ctx.exploit.Version)
+	var tgtObject *HeapObject
+	for _, obj := range objs.HeapObj {
+		fmt.Printf("Name: %s\n", obj.Name)
+		if tgtalloc != obj.Allocator {
+			continue
+		}
+		found := ""
+		for version, _ := range obj.Sizes {
+			ranges := strings.Split(version, "-")
+			if len(ranges) != 2 {
+				panic("Wrong version range")
+			}
+			left := getVersion(ranges[0])
+			right := getVersion(ranges[1])
+			if compareVersion(left, tgtVersion) && 
+				compareVersion(tgtVersion, right) {
+				fmt.Printf("Found suitable version: %s\n", version)
+				found = version
+				break
+			}
+		}
+		if found != "" {
+			expression, _ := obj.Sizes[found]
+			expr, err := govaluate.NewEvaluableExpression(expression)
+			if err != nil {
+				panic("load expression failed")
+			}
+			parameters := map[string]interface {} { "x": tgtSize }
+			result, err := expr.Evaluate(parameters)
+			if err == nil && result.(bool) {
+				fmt.Printf("Found proper object for vulnerable object\n")
+				tgtObject = &obj
+				break
+			}
+		}
+	}
+	if tgtObject != nil {
+		function, err := ioutil.ReadFile(filepath.Join(ctx.exploit.Directory, tgtObject.Name + ".alloc"))
+		if err != nil {
+			panic("target object does not exit")
+		}
+		alloc := "void %s() {\n%s\n}\n"
+		var filled string
+		if tgtObject.VarLen {
+			filled = fmt.Sprintf(string(function), total, tgtSize)
+		} else {
+			filled = fmt.Sprintf(string(function), total)
+		}
+		return fmt.Sprintf(alloc, funcName, filled)
+	}
+	return ""
+}
+
+func (ctx *context) generateFengshui() string {
+	if ctx.opts.Exploit == "" {
+		return ""
+	}
+	var objs Fengshui 
+	database, err := ioutil.ReadFile(filepath.Join(ctx.exploit.Directory, "heapdb.json"));
+	if err != nil {
+		panic("Failed to load heapdb.json")
+	}
+	json.Unmarshal([]byte(database), &objs)
+	if ctx.exploit.VulSize == ctx.exploit.TgtSize && 
+		ctx.exploit.VulAlloc == ctx.exploit.TgtAlloc {
+		return ctx.generateAllocation(&objs, ctx.exploit.VulSize, ctx.exploit.VulAlloc, "padding", 512)
+	} else {
+		return ctx.generateAllocation(&objs, ctx.exploit.VulSize, ctx.exploit.VulAlloc, "paddingVul", 256) + 
+			ctx.generateAllocation(&objs, ctx.exploit.TgtSize, ctx.exploit.TgtAlloc, "paddingTgt", 256)
+	}
+	return ""
 }
 
 func (ctx *context) generateSyscalls(calls []string, hasVars bool) string {
