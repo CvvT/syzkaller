@@ -67,8 +67,9 @@ func Write(p *prog.Prog, opts Options) ([]byte, error) {
 				tmp = append(tmp, "padding();\n")
 			} else {
 				tmp = append(tmp, calls[0:ctx.testcase.Index]...)
-				tmp = append(tmp, "paddingVul();\n");
+				// FIXME: does the order matter??
 				tmp = append(tmp, "paddingTgt();\n")
+				tmp = append(tmp, "paddingVul();\n");
 			}
 			tmp = append(tmp, calls[ctx.testcase.Index])
 			// allocate target object
@@ -257,10 +258,10 @@ func (ctx *context) generateFengshui() string {
 	// FIXME: the total number should be flexiable
 	if ctx.exploit.VulSize == ctx.exploit.TgtSize && 
 		ctx.exploit.VulAlloc == ctx.exploit.TgtAlloc {
-		return ctx.generateAllocation(&objs, ctx.exploit.VulSize, ctx.exploit.VulAlloc, "padding", 512)
+		return ctx.generateAllocation(&objs, ctx.exploit.VulSize, ctx.exploit.VulAlloc, "padding", 1024)
 	} else {
-		return ctx.generateAllocation(&objs, ctx.exploit.VulSize, ctx.exploit.VulAlloc, "paddingVul", 256) + 
-			ctx.generateAllocation(&objs, ctx.exploit.TgtSize, ctx.exploit.TgtAlloc, "paddingTgt", 256)
+		return ctx.generateAllocation(&objs, ctx.exploit.TgtSize, ctx.exploit.TgtAlloc, "paddingTgt", 512) +
+			ctx.generateAllocation(&objs, ctx.exploit.VulSize, ctx.exploit.VulAlloc, "paddingVul", 1024)
 	}
 	return ""
 }
