@@ -26,6 +26,12 @@ type HeapExploit struct {
 	Version 	string  `json:"version"`
 }
 
+type TestCase struct {
+	Solution 	map[string][]uint8	`json:"solution"`
+	Target		string 				`json:"target"`
+	Index 		int 				`json:"index"`
+}
+
 func getVersion(version string) []int {
 	var nums []int
 	vers := strings.Split(version, ".")

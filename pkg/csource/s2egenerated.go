@@ -3871,6 +3871,10 @@ static void loop(void)
 
 [[FENGSHUI]]
 
+[[ALLOCATETARGET]]
+
+[[TRIGGERTARGET]]
+
 #if SYZ_THREADED || SYZ_REPEAT || SYZ_SANDBOX_NONE || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE
 #if SYZ_THREADED
 void execute_call(int call)

@@ -46,18 +46,44 @@ func Write(p *prog.Prog, opts Options) ([]byte, error) {
 		json.Unmarshal([]byte(Answerfile), &ctx.testcase)
 	}
 
-	calls, vars, err := ctx.generateProgCalls(ctx.p, opts.Trace)
+	calls, vars, local_vars, err := ctx.generateProgCalls(ctx.p, opts.Trace)
 	if err != nil {
 		return nil, err
 	}
 
-	if ctx.opts.S2E && ctx.opts.Exploit == "" {
-		calls = append([]string {"s2e_invoke_plugin(\"ProgramMonitor\", \"s\", 1);"}, calls...)
-		calls = append(calls, "s2e_invoke_plugin(\"ProgramMonitor\", \"e\", 1);")	
+	// FIXME: 32
+	alloc_target, trigger_func, num_target := "allocTgt", "trigger", 32
+	if ctx.opts.S2E {
+		if ctx.opts.Exploit == "" {
+			// inform S2E to start/stop monitoring
+			calls = append([]string {"s2e_invoke_plugin(\"ProgramMonitor\", \"s\", 1);"}, calls...)
+			calls = append(calls, "s2e_invoke_plugin(\"ProgramMonitor\", \"e\", 1);")	
+		} else {
+			// insert padding function call
+			var tmp []string
+			if ctx.exploit.VulSize == ctx.exploit.TgtSize && 
+				ctx.exploit.VulAlloc == ctx.exploit.TgtAlloc {
+				tmp = append(tmp, calls[0:ctx.testcase.Index]...)
+				tmp = append(tmp, "padding();\n")
+			} else {
+				tmp = append(tmp, calls[0:ctx.testcase.Index]...)
+				tmp = append(tmp, "paddingVul();\n");
+				tmp = append(tmp, "paddingTgt();\n")
+			}
+			tmp = append(tmp, calls[ctx.testcase.Index])
+			// allocate target object
+			tmp = append(tmp, fmt.Sprintf("%s();\n", alloc_target))
+			calls = append(tmp, calls[ctx.testcase.Index+1:]...)
+			// insert deference code to trigger
+			calls = append(calls, fmt.Sprintf("%s();\n", trigger_func))
+		}
 	}
 
+	// insert local variable definition
+	calls = append(local_vars, calls...)
+
 	mmapProg := p.Target.GenerateUberMmapProg()
-	mmapCalls, _, err := ctx.generateProgCalls(mmapProg, false)
+	mmapCalls, _, _, err := ctx.generateProgCalls(mmapProg, false)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +104,18 @@ func Write(p *prog.Prog, opts Options) ([]byte, error) {
 		fmt.Fprintf(varsBuf, "};\n")
 	}
 
+	if opts.S2E && opts.Exploit != "" {
+		// FIXME: 32
+		fmt.Fprintf(varsBuf, "uint64 s[%v] = {", 32)
+		for i := 0; i < 32; i++ {
+			if i != 0 {
+				fmt.Fprintf(varsBuf, ", ")
+			}
+			fmt.Fprintf(varsBuf, "0");
+		}
+		fmt.Fprintf(varsBuf, "};\n")
+	}
+
 	sandboxFunc := "loop();"
 	if opts.Sandbox != "" {
 		sandboxFunc = "do_sandbox_" + opts.Sandbox + "();"
@@ -92,6 +130,8 @@ func Write(p *prog.Prog, opts Options) ([]byte, error) {
 		"RESULTS":         varsBuf.String(),
 		"SYSCALLS":        ctx.generateSyscalls(calls, len(vars) != 0),
 		"FENGSHUI":        ctx.generateFengshui(),
+		"ALLOCATETARGET":  ctx.generateTarget(ctx.testcase.Target, alloc_target, num_target),
+		"TRIGGERTARGET":   ctx.generateTrigger(ctx.testcase.Target, trigger_func, num_target),
 	}
 	if !opts.Threaded && !opts.Repeat && opts.Sandbox == "" {
 		// This inlines syscalls right into main for the simplest case.
@@ -119,8 +159,34 @@ type context struct {
 	sysTarget *targets.Target
 	calls     map[string]uint64 // CallName -> NR
 	num_vars  uint32
-	testcase  map[string][]uint8
+	testcase  TestCase
 	exploit   HeapExploit
+}
+
+func (ctx *context) generateTrigger(name, funcName string, total int) string {
+	if ctx.opts.S2E && ctx.opts.Exploit != "" {
+		function, err := ioutil.ReadFile(filepath.Join(ctx.exploit.Directory, "target", name + ".def"))
+		if err != nil {
+			panic("target object does not exit")
+		}
+		alloc := "void %s() {\n%s\n}\n"
+		filled := fmt.Sprintf(string(function), total)
+		return fmt.Sprintf(alloc, funcName, filled)
+	}
+	return ""
+}
+
+func (ctx *context) generateTarget(name, funcName string, total int) string {
+	if ctx.opts.S2E && ctx.opts.Exploit != "" {
+		function, err := ioutil.ReadFile(filepath.Join(ctx.exploit.Directory, "target", name + ".alloc"))
+		if err != nil {
+			panic("target object does not exit")
+		}
+		alloc := "void %s() {\n%s\n}\n"
+		filled := fmt.Sprintf(string(function), total)
+		return fmt.Sprintf(alloc, funcName, filled)
+	}
+	return ""
 }
 
 func (ctx *context) generateAllocation(objs *Fengshui, tgtSize int, tgtalloc, funcName string, total int) string {
@@ -155,21 +221,21 @@ func (ctx *context) generateAllocation(objs *Fengshui, tgtSize int, tgtalloc, fu
 			parameters := map[string]interface {} { "x": tgtSize }
 			result, err := expr.Evaluate(parameters)
 			if err == nil && result.(bool) {
-				fmt.Printf("Found proper object for vulnerable object\n")
+				fmt.Printf("Found proper object for vulnerable/target object\n")
 				tgtObject = &obj
 				break
 			}
 		}
 	}
 	if tgtObject != nil {
-		function, err := ioutil.ReadFile(filepath.Join(ctx.exploit.Directory, tgtObject.Name + ".alloc"))
+		function, err := ioutil.ReadFile(filepath.Join(ctx.exploit.Directory, "padding", tgtObject.Name + ".alloc"))
 		if err != nil {
 			panic("target object does not exit")
 		}
 		alloc := "void %s() {\n%s\n}\n"
 		var filled string
 		if tgtObject.VarLen {
-			filled = fmt.Sprintf(string(function), total, tgtSize)
+			filled = fmt.Sprintf(string(function), tgtSize, total)
 		} else {
 			filled = fmt.Sprintf(string(function), total)
 		}
@@ -188,6 +254,7 @@ func (ctx *context) generateFengshui() string {
 		panic("Failed to load heapdb.json")
 	}
 	json.Unmarshal([]byte(database), &objs)
+	// FIXME: the total number should be flexiable
 	if ctx.exploit.VulSize == ctx.exploit.TgtSize && 
 		ctx.exploit.VulAlloc == ctx.exploit.TgtAlloc {
 		return ctx.generateAllocation(&objs, ctx.exploit.VulSize, ctx.exploit.VulAlloc, "padding", 512)
@@ -256,22 +323,23 @@ func (ctx *context) generateSyscallDefines() string {
 	return buf.String()
 }
 
-func (ctx *context) generateProgCalls(p *prog.Prog, trace bool) ([]string, []uint64, error) {
+func (ctx *context) generateProgCalls(p *prog.Prog, trace bool) ([]string, []uint64, []string, error) {
 	exec := make([]byte, prog.ExecBufferSize)
 	progSize, err := p.SerializeForExec(exec)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to serialize program: %v", err)
+		return nil, nil, nil, fmt.Errorf("failed to serialize program: %v", err)
 	}
 	decoded, err := ctx.target.DeserializeExec(exec[:progSize])
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	calls, vars := ctx.generateCalls(decoded, trace)
-	return calls, vars, nil
+	calls, vars, local_vars := ctx.generateCalls(decoded, trace)
+	return calls, vars, local_vars, nil
 }
 
-func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint64) {
+func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint64, []string) {
 	var calls []string
+	var local_vars []string
 	csumSeq := 0
 	for ci, call := range p.Calls {
 		// Retrieve the type information of the system call
@@ -282,7 +350,7 @@ func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint
 		var base prog.ExecCopyin
 		for _, copyin := range call.Copyin {
 			key := fmt.Sprintf("ptr_0x%x", copyin.Addr)
-			if _, ok := ctx.testcase[key]; ok {
+			if _, ok := ctx.testcase.Solution[key]; ok {
 				base = copyin
 			}
 			ctx.copyin(w, &csumSeq, copyin, base)
@@ -306,7 +374,7 @@ func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint
 			fmt.Printf("res: %v, arg: %v, call: %s\n", resCopyout, argCopyout, call.Meta.CallName)
 			// Local variables we need to define
 			vars := ctx.emitCall(w, call, ci, resCopyout || argCopyout, trace, *s2e_call)
-			calls = append(vars, calls...)
+			local_vars = append(local_vars, vars...)
 		} else if trace {
 			fmt.Fprintf(w, "\t(void)res;\n")
 		}
@@ -320,7 +388,7 @@ func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint
 		fmt.Printf("1: %s\n", w.String())
 	}
 
-	return calls, p.Vars
+	return calls, p.Vars, local_vars
 }
 
 func (ctx *context) emitCall(ow *bytes.Buffer, call prog.ExecCall, ci int, haveCopyout, trace bool, s2e_call prog.Call) ([]string) {
@@ -452,7 +520,7 @@ func (ctx *context) copyin(w *bytes.Buffer, csumSeq *int, copyin prog.ExecCopyin
 		if arg.BitfieldOffset == 0 && arg.BitfieldLength == 0 {
 			if ctx.opts.Exploit != "" {
 				key := fmt.Sprintf("ptr_0x%x", first.Addr)
-				if values, ok := ctx.testcase[key]; ok {
+				if values, ok := ctx.testcase.Solution[key]; ok {
 					ctx.copyinVal(w, copyin.Addr, arg.Size, ctx.constValToStr(arg, values, copyin.Addr - first.Addr),
 							 arg.Format)
 				} else {
@@ -475,7 +543,7 @@ func (ctx *context) copyin(w *bytes.Buffer, csumSeq *int, copyin prog.ExecCopyin
 	case prog.ExecArgData:
 		if ctx.opts.Exploit != "" {
 			key := fmt.Sprintf("ptr_0x%x", first.Addr)
-			if values, ok := ctx.testcase[key]; ok {
+			if values, ok := ctx.testcase.Solution[key]; ok {
 				fmt.Fprintf(w, "\tNONFAILING(memcpy((void*)0x%x, \"%s\", %v));\n",
 					copyin.Addr, toCString(values), len(arg.Data))
 			} else {
@@ -626,7 +694,7 @@ func (ctx *context) constArgToVar(arg prog.ExecArgConst, s2e_arg prog.Arg, paren
 			break
 		}
 		var_name = ctx.assignVar()
-		if values, ok := ctx.testcase[var_name]; ok {
+		if values, ok := ctx.testcase.Solution[var_name]; ok {
 			val = ctx.constValToStr(arg, values, 0)
 		}
 		def = fmt.Sprintf("\t%s %s = %s;", ctx.gettype(arg), var_name, val)
