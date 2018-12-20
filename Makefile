@@ -91,13 +91,13 @@ endif
 	arch_linux_amd64_target arch_linux_386_target \
 	arch_linux_arm64_target arch_linux_arm_target arch_linux_ppc64le_target \
 	arch_freebsd_amd64_target arch_netbsd_amd64_target arch_windows_amd64_target \
-	arch_test presubmit presubmit_parallel clean
+	arch_test presubmit presubmit_parallel clean s2e
 
 all: host target
 
 host:
 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) install ./syz-manager
-	$(MAKE) manager runtest repro mutate prog2c db upgrade
+	$(MAKE) manager runtest repro mutate prog2c db upgrade s2e
 
 target:
 	GOOS=$(TARGETGOOS) GOARCH=$(TARGETGOARCH) $(GO) install ./syz-fuzzer
@@ -150,6 +150,9 @@ extract: bin/syz-extract
 	bin/syz-extract -build -os=$(TARGETOS) -sourcedir=$(SOURCEDIR) $(FILES)
 bin/syz-extract:
 	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o $@ ./sys/syz-extract
+
+s2e: 
+	GOOS=$(HOSTOS) GOARCH=$(HOSTARCH) $(HOSTGO) build $(GOHOSTFLAGS) -o ./bin/s2e-repro github.com/CvvT/syzkaller/tools/s2e-repro
 
 generate: generate_go generate_sys
 	$(MAKE) format
