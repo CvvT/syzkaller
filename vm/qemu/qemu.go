@@ -83,7 +83,7 @@ type archConfig struct {
 var archConfigs = map[string]*archConfig{
 	"linux/amd64": {
 		Qemu:      "qemu-system-x86_64",
-		QemuArgs:  "-enable-kvm -cpu host,migratable=off",
+		QemuArgs:  "-enable-kvm -cpu host",
 		TargetDir: "/",
 		// e1000e fails on recent Debian distros with:
 		// Initialization of device e1000e failed: failed to find romfile "efi-e1000e.rom
