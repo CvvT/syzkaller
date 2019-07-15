@@ -113,6 +113,10 @@ ioctl$TIOCGSERIAL(fd fd_tty, cmd const[TIOCGSERIAL], arg ptr[out, serial_struct]
 ioctl$TIOCSSERIAL(fd fd_tty, cmd const[TIOCSSERIAL], arg ptr[in, serial_struct])
 ioctl$TCGETS2(fd fd_tty, cmd const[TCGETS2], arg ptr[out, termios2])
 ioctl$TCSETS2(fd fd_tty, cmd const[TCSETS2], arg ptr[in, termios2])
+
+ioctl$TCSETSW2(fd fd_tty, cmd const[TCSETSW2], arg ptr[in, termios2])
+ioctl$TCSETSF2(fd fd_tty, cmd const[TCSETSF2], arg ptr[in, termios2])
+
 ioctl$TIOCSERGETLSR(fd fd_tty, cmd const[TIOCSERGETLSR], arg ptr[out, int32])
 ioctl$TIOCGRS485(fd fd_tty, cmd const[TIOCGRS485], arg ptr[out, serial_rs485])
 ioctl$TIOCSRS485(fd fd_tty, cmd const[TIOCSRS485], arg ptr[in, serial_rs485])
