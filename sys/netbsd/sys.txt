@@ -15,6 +15,8 @@ include <sys/resource.h>
 include <time.h>
 include <signal.h>
 include <sys/wait.h>
+include <sys/ptrace.h>
+include <sys/sched.h>
 
 syz_execute_func(text ptr[in, text[target]])
 
@@ -107,6 +109,10 @@ nanosleep(req ptr[in, timespec], rem ptr[out, timespec, opt])
 getitimer(which flags[getitimer_which], cur ptr[out, itimerval])
 setitimer(which flags[getitimer_which], new ptr[in, itimerval], old ptr[out, itimerval, opt])
 wait4(pid pid, status ptr[out, int32, opt], options flags[wait_options], ru ptr[out, rusage, opt])
+
+exit(code intptr)
+ptrace(request intptr, pid pid, addr ptr[out, intptr], data intptr)
+__clone(flags flags[clone_flags], sp buffer[in]) pid
 
 pollfd {
 	fd	fd
@@ -204,3 +210,4 @@ fcntl_lock = F_SETLK, F_SETLKW, F_GETLK
 fcntl_flags = FD_CLOEXEC
 fcntl_status = O_APPEND, O_ASYNC, O_NONBLOCK, O_DSYNC, O_RSYNC, O_ALT_IO, O_DIRECT, O_NOSIGPIPE
 flock_type = F_RDLCK, F_WRLCK, F_UNLCK
+clone_flags = CLONE_CSIGNAL, CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_PID, CLONE_PTRACE, CLONE_VFORK

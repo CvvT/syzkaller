@@ -44,8 +44,10 @@ type context struct {
 	cfg          *mgrconfig.Config
 	reporter     report.Reporter
 	crashTitle   string
+	crashType    report.Type
 	instances    chan *instance
 	bootRequests chan int
+	timeouts     []time.Duration
 	stats        *Stats
 	report       *report.Report
 }
@@ -70,22 +72,42 @@ func Run(crashLog []byte, cfg *mgrconfig.Config, reporter report.Reporter, vmPoo
 	if len(entries) == 0 {
 		return nil, nil, fmt.Errorf("crash log does not contain any programs")
 	}
-	crashStart := len(crashLog) // assuming VM hanged
-	crashTitle := "hang"
+	crashStart := len(crashLog)
+	crashTitle, crashType := "", report.Unknown
 	if rep := reporter.Parse(crashLog); rep != nil {
 		crashStart = rep.StartPos
 		crashTitle = rep.Title
+		crashType = rep.Type
 	}
-
+	// The shortest duration is 10 seconds to detect simple crashes (i.e. no races and no hangs).
+	// The longest duration is 6 minutes to catch races and hangs.
+	noOutputTimeout := vm.NoOutputTimeout + time.Minute
+	timeouts := []time.Duration{15 * time.Second, time.Minute, noOutputTimeout}
+	switch {
+	case crashTitle == "":
+		crashTitle = "no output/lost connection"
+		// Lost connection can be detected faster,
+		// but theoretically if it's caused by a race it may need the largest timeout.
+		// No output can only be reproduced with the max timeout.
+		// As a compromise we use the smallest and the largest timeouts.
+		timeouts = []time.Duration{15 * time.Second, noOutputTimeout}
+	case crashType == report.MemoryLeak:
+		// Memory leaks can't be detected quickly because of expensive setup and scanning.
+		timeouts = []time.Duration{time.Minute, noOutputTimeout}
+	case crashType == report.Hang:
+		timeouts = []time.Duration{noOutputTimeout}
+	}
 	ctx := &context{
 		cfg:          cfg,
 		reporter:     reporter,
 		crashTitle:   crashTitle,
+		crashType:    crashType,
 		instances:    make(chan *instance, len(vmIndexes)),
 		bootRequests: make(chan int, len(vmIndexes)),
+		timeouts:     timeouts,
 		stats:        new(Stats),
 	}
-	ctx.reproLog(0, "%v programs, %v VMs", len(entries), len(vmIndexes))
+	ctx.reproLog(0, "%v programs, %v VMs, timeouts %v", len(entries), len(vmIndexes), timeouts)
 	var wg sync.WaitGroup
 	wg.Add(len(vmIndexes))
 	for _, vmIndex := range vmIndexes {
@@ -142,6 +164,12 @@ func Run(crashLog []byte, cfg *mgrconfig.Config, reporter report.Reporter, vmPoo
 		wg.Wait()
 		close(ctx.instances)
 	}()
+	defer func() {
+		close(ctx.bootRequests)
+		for inst := range ctx.instances {
+			inst.Close()
+		}
+	}()
 
 	res, err := ctx.repro(entries, crashStart)
 	if err != nil {
@@ -165,11 +193,6 @@ func Run(crashLog []byte, cfg *mgrconfig.Config, reporter report.Reporter, vmPoo
 		ctx.reproLog(3, "final repro crashed as (corrupted=%v):\n%s",
 			ctx.report.Corrupted, ctx.report.Report)
 		res.Report = ctx.report
-	}
-
-	close(ctx.bootRequests)
-	for inst := range ctx.instances {
-		inst.Close()
 	}
 	return res, ctx.stats, nil
 }
@@ -251,16 +274,10 @@ func (ctx *context) extractProg(entries []*prog.LogEntry) (*Result, error) {
 	for i := len(indices) - 1; i >= 0; i-- {
 		lastEntries = append(lastEntries, entries[indices[i]])
 	}
-
-	// The shortest duration is 10 seconds to detect simple crashes (i.e. no races and no hangs).
-	// The longest duration is 5 minutes to catch races and hangs. Note that this value must be larger
-	// than hang/no output detection duration in vm.MonitorExecution, which is currently set to 3 mins.
-	timeouts := []time.Duration{10 * time.Second, 1 * time.Minute, 5 * time.Minute}
-
-	for _, timeout := range timeouts {
+	for _, timeout := range ctx.timeouts {
 		// Execute each program separately to detect simple crashes caused by a single program.
 		// Programs are executed in reverse order, usually the last program is the guilty one.
-		res, err := ctx.extractProgSingle(reverseEntries(lastEntries), timeout)
+		res, err := ctx.extractProgSingle(lastEntries, timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -275,7 +292,7 @@ func (ctx *context) extractProg(entries []*prog.LogEntry) (*Result, error) {
 		}
 
 		// Execute all programs and bisect the log to find multiple guilty programs.
-		res, err = ctx.extractProgBisect(reverseEntries(entries), timeout)
+		res, err = ctx.extractProgBisect(entries, timeout)
 		if err != nil {
 			return nil, err
 		}
@@ -293,6 +310,9 @@ func (ctx *context) extractProgSingle(entries []*prog.LogEntry, duration time.Du
 	ctx.reproLog(3, "single: executing %d programs separately with timeout %s", len(entries), duration)
 
 	opts := csource.DefaultOpts(ctx.cfg)
+	if ctx.crashType == report.MemoryLeak {
+		opts.Leak = true
+	}
 	for _, ent := range entries {
 		opts.Fault = ent.Fault
 		opts.FaultCall = ent.FaultCall
@@ -323,8 +343,11 @@ func (ctx *context) extractProgBisect(entries []*prog.LogEntry, baseDuration tim
 	ctx.reproLog(3, "bisect: bisecting %d programs with base timeout %s", len(entries), baseDuration)
 
 	opts := csource.DefaultOpts(ctx.cfg)
+	if ctx.crashType == report.MemoryLeak {
+		opts.Leak = true
+	}
 	duration := func(entries int) time.Duration {
-		return baseDuration + time.Duration((entries/4))*time.Second
+		return baseDuration + time.Duration(entries/4)*time.Second
 	}
 
 	// Bisect the log to find multiple guilty programs.
@@ -547,6 +570,7 @@ func (ctx *context) testProgs(entries []*prog.LogEntry, duration time.Duration, 
 		ctx.cfg.TargetOS, ctx.cfg.TargetArch, opts.Sandbox, opts.Repeat,
 		opts.Threaded, opts.Collide, opts.Procs, -1, -1, vmProgFile)
 	ctx.reproLog(2, "testing program (duration=%v, %+v): %s", duration, opts, program)
+	ctx.reproLog(3, "detailed listing:\n%s", pstr)
 	return ctx.testImpl(inst.Instance, command, duration)
 }
 
@@ -555,7 +579,7 @@ func (ctx *context) testCProg(p *prog.Prog, duration time.Duration, opts csource
 	if err != nil {
 		return false, err
 	}
-	bin, err := csource.Build(p.Target, src)
+	bin, err := csource.BuildNoWarn(p.Target, src)
 	if err != nil {
 		return false, err
 	}
@@ -587,13 +611,18 @@ func (ctx *context) testImpl(inst *vm.Instance, command string, duration time.Du
 	if err != nil {
 		return false, fmt.Errorf("failed to run command in VM: %v", err)
 	}
-	rep := inst.MonitorExecution(outc, errc, ctx.reporter, true)
+	rep := inst.MonitorExecution(outc, errc, ctx.reporter,
+		vm.ExitTimeout|vm.ExitNormal|vm.ExitError)
 	if rep == nil {
 		ctx.reproLog(2, "program did not crash")
 		return false, nil
 	}
 	if rep.Suppressed {
 		ctx.reproLog(2, "suppressed program crash: %v", rep.Title)
+		return false, nil
+	}
+	if ctx.crashType == report.MemoryLeak && rep.Type != report.MemoryLeak {
+		ctx.reproLog(2, "not a leak crash: %v", rep.Title)
 		return false, nil
 	}
 	ctx.report = rep
@@ -628,6 +657,12 @@ func (ctx *context) bisectProgs(progs []*prog.LogEntry, pred func([]*prog.LogEnt
 
 	guilty := [][]*prog.LogEntry{progs}
 again:
+	if len(guilty) > 8 {
+		// This is usually the case for flaky crashes. Continuing bisection at this
+		// point would just take a lot of time and likely produce no result.
+		ctx.reproLog(3, "bisect: too many guilty chunks, aborting")
+		return nil, nil
+	}
 	ctx.reproLog(3, "bisect: guilty chunks: %v", chunksToStr(guilty))
 	for i, chunk := range guilty {
 		if len(chunk) == 1 {
@@ -723,14 +758,6 @@ func chunksToStr(chunks [][]*prog.LogEntry) string {
 	return log
 }
 
-func reverseEntries(entries []*prog.LogEntry) []*prog.LogEntry {
-	last := len(entries) - 1
-	for i := 0; i < len(entries)/2; i++ {
-		entries[i], entries[last-i] = entries[last-i], entries[i]
-	}
-	return entries
-}
-
 func encodeEntries(entries []*prog.LogEntry) []byte {
 	buf := new(bytes.Buffer)
 	for _, ent := range entries {
@@ -775,7 +802,7 @@ var progSimplifies = []Simplify{
 		}
 		opts.Repeat = false
 		opts.EnableCgroups = false
-		opts.ResetNet = false
+		opts.EnableNetReset = false
 		opts.Procs = 1
 		return true
 	},
@@ -802,9 +829,11 @@ var cSimplifies = append(progSimplifies, []Simplify{
 		}
 		opts.Sandbox = ""
 		opts.EnableTun = false
+		opts.EnableNetDev = false
+		opts.EnableNetReset = false
 		opts.EnableCgroups = false
-		opts.EnableNetdev = false
-		opts.ResetNet = false
+		opts.EnableBinfmtMisc = false
+		opts.EnableCloseFds = false
 		return true
 	},
 	func(opts *csource.Options) bool {
@@ -815,6 +844,20 @@ var cSimplifies = append(progSimplifies, []Simplify{
 		return true
 	},
 	func(opts *csource.Options) bool {
+		if !opts.EnableNetDev {
+			return false
+		}
+		opts.EnableNetDev = false
+		return true
+	},
+	func(opts *csource.Options) bool {
+		if !opts.EnableNetReset {
+			return false
+		}
+		opts.EnableNetReset = false
+		return true
+	},
+	func(opts *csource.Options) bool {
 		if !opts.EnableCgroups {
 			return false
 		}
@@ -822,17 +865,19 @@ var cSimplifies = append(progSimplifies, []Simplify{
 		return true
 	},
 	func(opts *csource.Options) bool {
-		if !opts.EnableNetdev {
+		if !opts.EnableBinfmtMisc {
 			return false
 		}
-		opts.EnableNetdev = false
+		opts.EnableBinfmtMisc = false
 		return true
 	},
 	func(opts *csource.Options) bool {
-		if !opts.ResetNet {
+		// We don't want to remove close_fds() call when repeat is enabled,
+		// since that can lead to deadlocks, see executor/common_linux.h.
+		if !opts.EnableCloseFds || opts.Repeat {
 			return false
 		}
-		opts.ResetNet = false
+		opts.EnableCloseFds = false
 		return true
 	},
 	func(opts *csource.Options) bool {

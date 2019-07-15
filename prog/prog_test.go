@@ -5,12 +5,10 @@ package prog
 
 import (
 	"bytes"
-	"encoding/hex"
 	"fmt"
 	"math/rand"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestGeneration(t *testing.T) {
@@ -24,7 +22,7 @@ func TestDefault(t *testing.T) {
 	target, _, _ := initTest(t)
 	for _, meta := range target.Syscalls {
 		ForeachType(meta, func(typ Type) {
-			arg := typ.makeDefaultArg()
+			arg := typ.DefaultArg()
 			if !isDefault(arg) {
 				t.Errorf("default arg is not default: %s\ntype: %#v\narg: %#v",
 					typ, typ, arg)
@@ -38,7 +36,7 @@ func TestDefaultCallArgs(t *testing.T) {
 	for _, meta := range target.SyscallMap {
 		// Ensure that we can restore all arguments of all calls.
 		prog := fmt.Sprintf("%v()", meta.Name)
-		p, err := target.Deserialize([]byte(prog))
+		p, err := target.Deserialize([]byte(prog), NonStrict)
 		if err != nil {
 			t.Fatalf("failed to restore default args in prog %q: %v", prog, err)
 		}
@@ -53,7 +51,7 @@ func TestSerialize(t *testing.T) {
 	for i := 0; i < iters; i++ {
 		p := target.Generate(rs, 10, nil)
 		data := p.Serialize()
-		p1, err := target.Deserialize(data)
+		p1, err := target.Deserialize(data, NonStrict)
 		if err != nil {
 			t.Fatalf("failed to deserialize program: %v\n%s", err, data)
 		}
@@ -145,9 +143,7 @@ func TestCrossTarget(t *testing.T) {
 }
 
 func testCrossTarget(t *testing.T, target *Target, crossTargets []*Target) {
-	seed := int64(time.Now().UnixNano())
-	t.Logf("seed=%v", seed)
-	rs := rand.NewSource(seed)
+	rs := randSource(t)
 	iters := 100
 	if testing.Short() {
 		iters /= 10
@@ -155,7 +151,7 @@ func testCrossTarget(t *testing.T, target *Target, crossTargets []*Target) {
 	for i := 0; i < iters; i++ {
 		p := target.Generate(rs, 20, nil)
 		testCrossArchProg(t, p, crossTargets)
-		p, err := target.Deserialize(p.Serialize())
+		p, err := target.Deserialize(p.Serialize(), NonStrict)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -172,7 +168,7 @@ func testCrossTarget(t *testing.T, target *Target, crossTargets []*Target) {
 func testCrossArchProg(t *testing.T, p *Prog, crossTargets []*Target) {
 	serialized := p.Serialize()
 	for _, crossTarget := range crossTargets {
-		_, err := crossTarget.Deserialize(serialized)
+		_, err := crossTarget.Deserialize(serialized, NonStrict)
 		if err == nil || strings.Contains(err.Error(), "unknown syscall") {
 			continue
 		}
@@ -223,24 +219,16 @@ func TestEscapingPaths(t *testing.T) {
 		"file/../../file":        true,
 		"../file":                true,
 		"./file/../../file/file": true,
-		"":          false,
-		".":         false,
-		"file":      false,
-		"./file":    false,
-		"./file/..": false,
+		"":                       false,
+		".":                      false,
+		"file":                   false,
+		"./file":                 false,
+		"./file/..":              false,
 	}
-	target, err := GetTarget("test", "64")
-	if err != nil {
-		t.Fatal(err)
-	}
-	for path, escaping := range paths {
-		text := fmt.Sprintf("mutate5(&(0x7f0000000000)=\"%s\", 0x0)", hex.EncodeToString([]byte(path)))
-		_, err := target.Deserialize([]byte(text))
-		if !escaping && err != nil {
-			t.Errorf("path %q is detected as escaping (%v)", path, err)
-		}
-		if escaping && (err == nil || !strings.Contains(err.Error(), "sandbox escaping file")) {
-			t.Errorf("path %q is not detected as escaping (%v)", path, err)
+	for path, want := range paths {
+		got := escapingFilename(path)
+		if got != want {
+			t.Errorf("path %q: got %v, want %v", path, got, want)
 		}
 	}
 }
@@ -367,7 +355,7 @@ fallback$0()
 	}
 	for i, test := range tests {
 		t.Run(fmt.Sprint(i), func(t *testing.T) {
-			p, err := target.Deserialize([]byte(test.prog))
+			p, err := target.Deserialize([]byte(test.prog), Strict)
 			if err != nil {
 				t.Fatal(err)
 			}

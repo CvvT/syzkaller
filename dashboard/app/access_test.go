@@ -8,10 +8,12 @@ package dash
 import (
 	"bytes"
 	"fmt"
+	"net/http"
 	"strconv"
 	"testing"
 
 	"github.com/google/syzkaller/dashboard/dashapi"
+	"google.golang.org/appengine/user"
 )
 
 // TestAccessConfig checks that access level were properly assigned throughout the config.
@@ -53,10 +55,46 @@ func TestAccess(t *testing.T) {
 		url   string      // url at which this entity can be requested.
 	}
 	entities := []entity{
+		// Main pages.
 		{
-			// Main page.
-			level: config.AccessLevel,
-			url:   "/",
+			level: AccessAdmin,
+			url:   "/admin",
+		},
+		{
+			level: AccessPublic,
+			url:   "/access-public",
+		},
+		{
+			level: AccessPublic,
+			url:   "/access-public/fixed",
+		},
+		{
+			level: AccessPublic,
+			url:   "/access-public/invalid",
+		},
+		{
+			level: AccessUser,
+			url:   "/access-user",
+		},
+		{
+			level: AccessUser,
+			url:   "/access-user/fixed",
+		},
+		{
+			level: AccessUser,
+			url:   "/access-user/invalid",
+		},
+		{
+			level: AccessAdmin,
+			url:   "/access-admin",
+		},
+		{
+			level: AccessAdmin,
+			url:   "/access-admin/fixed",
+		},
+		{
+			level: AccessAdmin,
+			url:   "/access-admin/invalid",
 		},
 		{
 			// Any references to namespace, reporting, links, etc.
@@ -73,14 +111,10 @@ func TestAccess(t *testing.T) {
 	// noteBugAccessLevel collects all entities associated with the extID bug.
 	noteBugAccessLevel := func(extID string, level AccessLevel) {
 		bug, _, err := findBugByReportingID(c.ctx, extID)
-		if err != nil {
-			t.Fatal(err)
-		}
+		c.expectOK(err)
 		crash, _, err := findCrashForBug(c.ctx, bug)
-		if err != nil {
-			t.Fatal(err)
-		}
-		bugID := bugKeyHash(bug.Namespace, bug.Title, bug.Seq)
+		c.expectOK(err)
+		bugID := bug.keyHash()
 		entities = append(entities, []entity{
 			{
 				level: level,
@@ -147,9 +181,7 @@ func TestAccess(t *testing.T) {
 	// noteBuildccessLevel collects all entities associated with the kernel build buildID.
 	noteBuildccessLevel := func(ns, buildID string) {
 		build, err := loadBuild(c.ctx, ns, buildID)
-		if err != nil {
-			t.Fatal(err)
-		}
+		c.expectOK(err)
 		entities = append(entities, entity{
 			level: config.Namespaces[ns].AccessLevel,
 			ref:   build.ID,
@@ -199,7 +231,10 @@ func TestAccess(t *testing.T) {
 				repInvalid = client.pollBug()
 			}
 			client.updateBug(repInvalid.ID, dashapi.BugStatusInvalid, "")
-			noteBugAccessLevel(repInvalid.ID, accessLevel)
+			// Invalid bugs become visible up to the last reporting.
+			finalLevel := config.Namespaces[ns].
+				Reporting[len(config.Namespaces[ns].Reporting)-1].AccessLevel
+			noteBugAccessLevel(repInvalid.ID, finalLevel)
 
 			crashFixed := testCrashWithRepro(build, reportingIdx*10+0)
 			client.ReportCrash(crashFixed)
@@ -221,9 +256,7 @@ func TestAccess(t *testing.T) {
 			buildFixing.Commits = []string{ns + "-patch0"}
 			client.UploadBuild(buildFixing)
 			noteBuildccessLevel(ns, buildFixing.ID)
-			// Fixed bugs become visible up to the last reporting.
-			finalLevel := config.Namespaces[ns].
-				Reporting[len(config.Namespaces[ns].Reporting)-1].AccessLevel
+			// Fixed bugs are also visible up to the last reporting.
 			noteBugAccessLevel(repFixed.ID, finalLevel)
 
 			crashOpen := testCrashWithRepro(build, reportingIdx*10+0)
@@ -288,6 +321,16 @@ func TestAccess(t *testing.T) {
 		reply, err := c.AuthGET(requestLevel, url)
 		if requestLevel >= pageLevel {
 			c.expectOK(err)
+		} else if requestLevel == AccessPublic {
+			loginURL, err1 := user.LoginURL(c.ctx, url)
+			if err1 != nil {
+				t.Fatal(err1)
+			}
+			c.expectNE(err, nil)
+			httpErr, ok := err.(HttpError)
+			c.expectTrue(ok)
+			c.expectEQ(httpErr.Code, http.StatusTemporaryRedirect)
+			c.expectEQ(httpErr.Headers["Location"], []string{loginURL})
 		} else {
 			c.expectForbidden(err)
 		}

@@ -21,21 +21,23 @@ import (
 )
 
 var (
-	flagOS        = flag.String("os", "", "target OS")
+	flagOS        = flag.String("os", runtime.GOOS, "target OS")
 	flagBuild     = flag.Bool("build", false, "regenerate arch-specific kernel headers")
 	flagSourceDir = flag.String("sourcedir", "", "path to kernel source checkout dir")
+	flagIncludes  = flag.String("includedirs", "", "path to other kernel source include dirs separated by commas")
 	flagBuildDir  = flag.String("builddir", "", "path to kernel build dir")
 	flagArch      = flag.String("arch", "", "comma-separated list of arches to generate (all by default)")
 )
 
 type Arch struct {
-	target    *targets.Target
-	sourceDir string
-	buildDir  string
-	build     bool
-	files     []*File
-	err       error
-	done      chan bool
+	target      *targets.Target
+	sourceDir   string
+	includeDirs string
+	buildDir    string
+	build       bool
+	files       []*File
+	err         error
+	done        chan bool
 }
 
 type File struct {
@@ -63,6 +65,7 @@ var extractors = map[string]Extractor{
 	"android": new(linux),
 	"fuchsia": new(fuchsia),
 	"windows": new(windows),
+	"trusty":  new(trusty),
 }
 
 func main() {
@@ -175,11 +178,12 @@ func createArches(OS string, archArray, files []string) ([]*Arch, error) {
 		}
 
 		arch := &Arch{
-			target:    target,
-			sourceDir: *flagSourceDir,
-			buildDir:  buildDir,
-			build:     *flagBuild,
-			done:      make(chan bool),
+			target:      target,
+			sourceDir:   *flagSourceDir,
+			includeDirs: *flagIncludes,
+			buildDir:    buildDir,
+			build:       *flagBuild,
+			done:        make(chan bool),
 		}
 		for _, f := range files {
 			arch.files = append(arch.files, &File{
@@ -241,15 +245,23 @@ func archFileList(os, arch string, files []string) (string, []string, []string, 
 		if err != nil || len(matches) == 0 {
 			return "", nil, nil, fmt.Errorf("failed to find sys files: %v", err)
 		}
+		manualFiles := map[string]bool{
+			// Not upstream, generated on https://github.com/multipath-tcp/mptcp_net-next
+			"mptcp.txt": true,
+			// This was added to linux-next, then we generated consts and then dropped from linux-next.
+			// So for now we can't regenereate this, but it should be resubmitted later
+			// so we don't remove the descriptions entirely.
+			"fsverity.txt": true,
+		}
 		androidFiles := map[string]bool{
-			"tlk_device.txt": true,
+			"dev_tlk_device.txt": true,
 			// This was generated on:
 			// https://source.codeaurora.org/quic/la/kernel/msm-4.9 msm-4.9
-			"video4linux.txt": true,
+			"dev_video4linux.txt": true,
 		}
 		for _, f := range matches {
 			f = filepath.Base(f)
-			if os == "linux" && android != androidFiles[f] {
+			if manualFiles[f] || os == "linux" && android != androidFiles[f] {
 				continue
 			}
 			files = append(files, f)

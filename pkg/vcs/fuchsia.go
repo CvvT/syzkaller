@@ -5,7 +5,6 @@ package vcs
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
@@ -13,16 +12,16 @@ import (
 )
 
 type fuchsia struct {
-	vm     string
-	dir    string
-	zircon *git
+	vm   string
+	dir  string
+	repo *git
 }
 
 func newFuchsia(vm, dir string) *fuchsia {
 	return &fuchsia{
-		vm:     vm,
-		dir:    dir,
-		zircon: newGit(filepath.Join(dir, "zircon")),
+		vm:   vm,
+		dir:  dir,
+		repo: newGit(dir, nil),
 	}
 }
 
@@ -36,7 +35,7 @@ func (ctx *fuchsia) Poll(repo, branch string) (*Commit, error) {
 			return nil, err
 		}
 	}
-	return ctx.zircon.HeadCommit()
+	return ctx.repo.HeadCommit()
 }
 
 func (ctx *fuchsia) initRepo() error {
@@ -51,12 +50,12 @@ func (ctx *fuchsia) initRepo() error {
 	if err := osutil.SandboxChown(tmpDir); err != nil {
 		return err
 	}
-	cmd := "curl -s 'https://fuchsia.googlesource.com/scripts/+/master/bootstrap?format=TEXT' |" +
-		"base64 --decode | bash -s garnet"
+	cmd := "curl -s 'https://fuchsia.googlesource.com/fuchsia/+/master/scripts/bootstrap?format=TEXT' |" +
+		"base64 --decode | bash"
 	if _, err := runSandboxed(tmpDir, "bash", "-c", cmd); err != nil {
 		return err
 	}
-	return os.Rename(filepath.Join(tmpDir, "fuchsia"), ctx.dir)
+	return osutil.Rename(filepath.Join(tmpDir, "fuchsia"), ctx.dir)
 }
 
 func (ctx *fuchsia) CheckoutBranch(repo, branch string) (*Commit, error) {
@@ -75,18 +74,18 @@ func (ctx *fuchsia) HeadCommit() (*Commit, error) {
 	return nil, fmt.Errorf("not implemented for fuchsia")
 }
 
+func (ctx *fuchsia) GetCommitByTitle(title string) (*Commit, error) {
+	return ctx.repo.GetCommitByTitle(title)
+}
+
+func (ctx *fuchsia) GetCommitsByTitles(titles []string) ([]*Commit, []string, error) {
+	return ctx.repo.GetCommitsByTitles(titles)
+}
+
 func (ctx *fuchsia) ListRecentCommits(baseCommit string) ([]string, error) {
-	return ctx.zircon.ListRecentCommits(baseCommit)
+	return ctx.repo.ListRecentCommits(baseCommit)
 }
 
-func (ctx *fuchsia) ExtractFixTagsFromCommits(baseCommit, email string) ([]FixCommit, error) {
-	return ctx.zircon.ExtractFixTagsFromCommits(baseCommit, email)
-}
-
-func (ctx *fuchsia) Bisect(bad, good string, trace io.Writer, pred func() (BisectResult, error)) (*Commit, error) {
-	return nil, fmt.Errorf("not implemented for fuchsia")
-}
-
-func (ctx *fuchsia) PreviousReleaseTags(commit string) ([]string, error) {
-	return nil, fmt.Errorf("not implemented for fuchsia")
+func (ctx *fuchsia) ExtractFixTagsFromCommits(baseCommit, email string) ([]*Commit, error) {
+	return ctx.repo.ExtractFixTagsFromCommits(baseCommit, email)
 }

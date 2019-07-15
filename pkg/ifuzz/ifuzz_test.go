@@ -6,6 +6,7 @@ package ifuzz_test
 import (
 	"encoding/hex"
 	"math/rand"
+	"os"
 	"testing"
 	"time"
 
@@ -35,7 +36,10 @@ func TestMode(t *testing.T) {
 }
 
 func TestDecode(t *testing.T) {
-	seed := int64(time.Now().UnixNano())
+	seed := time.Now().UnixNano()
+	if os.Getenv("TRAVIS") != "" {
+		seed = 0 // required for deterministic coverage reports
+	}
 	t.Logf("seed=%v", seed)
 	r := rand.New(rand.NewSource(seed))
 

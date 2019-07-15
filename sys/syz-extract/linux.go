@@ -43,16 +43,38 @@ func (*linux) prepare(sourcedir string, build bool, arches []string) error {
 }
 
 func (*linux) prepareArch(arch *Arch) error {
+	// Kernel misses these headers on all arches.
+	// So we create empty stubs in buildDir/syzkaller and add -IbuildDir/syzkaller
+	// as the last flag so it won't override real kernel headers.
+	for _, hdr := range []string{
+		"asm/a.out.h",
+		"asm/prctl.h",
+		"asm/mce.h",
+	} {
+		fullPath := filepath.Join(arch.buildDir, "syzkaller", hdr)
+		if err := osutil.MkdirAll(filepath.Dir(fullPath)); err != nil {
+			return err
+		}
+		if err := osutil.WriteFile(fullPath, nil); err != nil {
+			return nil
+		}
+	}
 	if !arch.build {
 		return nil
 	}
 	target := arch.target
+	var cflags []string
+	for _, flag := range target.CrossCFlags {
+		if !strings.HasPrefix(flag, "-W") {
+			cflags = append(cflags, flag)
+		}
+	}
 	kernelDir := arch.sourceDir
 	buildDir := arch.buildDir
 	makeArgs := []string{
 		"ARCH=" + target.KernelArch,
 		"CROSS_COMPILE=" + target.CCompilerPrefix,
-		"CFLAGS=" + strings.Join(target.CrossCFlags, " "),
+		"CFLAGS=" + strings.Join(cflags, " "),
 		"O=" + buildDir,
 		"-j", fmt.Sprint(runtime.NumCPU()),
 	}
@@ -60,11 +82,17 @@ func (*linux) prepareArch(arch *Arch) error {
 	if err != nil {
 		return fmt.Errorf("make defconfig failed: %v\n%s", err, out)
 	}
-	// Without CONFIG_NETFILTER kernel does not build.
-	out, err = osutil.RunCmd(time.Minute, buildDir, "sed", "-i",
-		"s@# CONFIG_NETFILTER is not set@CONFIG_NETFILTER=y@g", ".config")
+	_, err = osutil.RunCmd(time.Minute, buildDir, filepath.Join(kernelDir, "scripts", "config"),
+		// powerpc arch is configured to be big-endian by default, but we want little-endian powerpc.
+		// Since all of our archs are little-endian for now, we just blindly switch it.
+		"-d", "CPU_BIG_ENDIAN", "-e", "CPU_LITTLE_ENDIAN",
+		// Without CONFIG_NETFILTER kernel does not build.
+		"-e", "NETFILTER",
+		// include/net/mptcp.h is the only header in kernel that guards some
+		// of the consts with own config, so we need to enable CONFIG_MPTCP.
+		"-e", "MPTCP")
 	if err != nil {
-		return fmt.Errorf("sed .config failed: %v\n%s", err, out)
+		return err
 	}
 	out, err = osutil.RunCmd(time.Hour, kernelDir, "make", append(makeArgs, "olddefconfig")...)
 	if err != nil {
@@ -100,11 +128,17 @@ func (*linux) processFile(arch *Arch, info *compiler.ConstInfo) (map[string]uint
 		"-I" + sourceDir + "/include/uapi",
 		"-I" + buildDir + "/include/generated/uapi",
 		"-I" + sourceDir,
+		"-I" + buildDir + "/syzkaller",
 		"-include", sourceDir + "/include/linux/kconfig.h",
 	}
 	args = append(args, arch.target.CFlags...)
 	for _, incdir := range info.Incdirs {
 		args = append(args, "-I"+sourceDir+"/"+incdir)
+	}
+	if arch.includeDirs != "" {
+		for _, dir := range strings.Split(arch.includeDirs, ",") {
+			args = append(args, "-I"+dir)
+		}
 	}
 	const addSource = `
 #include <asm/unistd.h>

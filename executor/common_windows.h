@@ -108,11 +108,6 @@ static void loop();
 static int do_sandbox_none(void)
 {
 	loop();
-	doexit(0);
+	return 0;
 }
-#endif
-
-#if SYZ_EXECUTOR
-#define do_sandbox_setuid() 0
-#define do_sandbox_namespace() 0
 #endif

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/google/syzkaller/pkg/log"
+	"github.com/google/syzkaller/pkg/osutil"
 )
 
 // Pool represents a set of test machines (VMs, physical devices, etc) of particular type.
@@ -33,8 +34,8 @@ type Instance interface {
 	// Copy copies a hostSrc file into VM and returns file name in VM.
 	Copy(hostSrc string) (string, error)
 
-	// Forward setups forwarding from within VM to host port port
-	// and returns address to use in VM.
+	// Forward sets up forwarding from within VM to the given tcp
+	// port on the host and returns the address to use in VM.
 	Forward(port int) (string, error)
 
 	// Run runs cmd inside of the VM (think of ssh cmd).
@@ -43,10 +44,13 @@ type Instance interface {
 	// Command is terminated after timeout. Send on the stop chan can be used to terminate it earlier.
 	Run(timeout time.Duration, stop <-chan bool, command string) (outc <-chan []byte, errc <-chan error, err error)
 
-	// Diagnose forces VM to dump additional debugging info
-	// (e.g. sending some sys-rq's or SIGABORT'ing a Go program).
-	// Returns true if it did anything.
-	Diagnose() bool
+	// Diagnose retrieves additional debugging info from the VM (e.g. by
+	// sending some sys-rq's or SIGABORT'ing a Go program).
+	//
+	// Optionally returns (some or all) of the info directly. If wait ==
+	// true, the caller must wait for the VM to output info directly to its
+	// log.
+	Diagnose() (diagnosis []byte, wait bool)
 
 	// Close stops and destroys the VM.
 	Close()
@@ -71,6 +75,15 @@ type Env struct {
 type BootError struct {
 	Title  string
 	Output []byte
+}
+
+func MakeBootError(err error, output []byte) error {
+	switch err1 := err.(type) {
+	case *osutil.VerboseError:
+		return BootError{err1.Title, append(err1.Output, output...)}
+	default:
+		return BootError{err.Error(), output}
+	}
 }
 
 func (err BootError) Error() string {

@@ -7,6 +7,11 @@ import (
 	"github.com/google/syzkaller/prog"
 )
 
-func isSupported(c *prog.Syscall, sandbox string) (bool, string) {
+func isSupported(c *prog.Syscall, target *prog.Target, sandbox string) (bool, string) {
 	return true, ""
+}
+
+func init() {
+	checkFeature[FeatureCoverage] = unconditionallyEnabled
+	checkFeature[FeatureNetworkInjection] = unconditionallyEnabled
 }

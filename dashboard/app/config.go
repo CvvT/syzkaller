@@ -6,11 +6,13 @@ package dash
 import (
 	"encoding/json"
 	"fmt"
+	"net/mail"
 	"regexp"
 	"time"
 
 	"github.com/google/syzkaller/dashboard/dashapi"
 	"github.com/google/syzkaller/pkg/email"
+	"github.com/google/syzkaller/pkg/vcs"
 )
 
 // There are multiple configurable aspects of the app (namespaces, reporting, API clients, etc).
@@ -23,18 +25,22 @@ type GlobalConfig struct {
 	AuthDomain string
 	// Google Analytics Tracking ID.
 	AnalyticsTrackingID string
+	// URL prefix of source coverage reports.
+	// Dashboard will append manager_name.html to that prefix.
+	// syz-ci can upload these reports to GCS.
+	CoverPath string
 	// Global API clients that work across namespaces (e.g. external reporting).
 	Clients map[string]string
 	// List of emails blacklisted from issuing test requests.
 	EmailBlacklist []string
+	// Namespace that is shown by default (no namespace selected yet).
+	DefaultNamespace string
 	// Per-namespace config.
 	// Namespaces are a mechanism to separate groups of different kernels.
 	// E.g. Debian 4.4 kernels and Ubuntu 4.9 kernels.
 	// Each namespace has own reporting config, own API clients
 	// and bugs are not merged across namespaces.
 	Namespaces map[string]*Config
-	// Maps full repository address/branch to description of this repo.
-	KernelRepos map[string]KernelRepo
 }
 
 // Per-namespace config.
@@ -43,9 +49,9 @@ type Config struct {
 	AccessLevel AccessLevel
 	// Name used in UI.
 	DisplayTitle string
-	// URL of a source coverage report for this namespace
-	// (uploading/updating the report is out of scope of the system for now).
-	CoverLink string
+	// Unique string that allows to show "similar bugs" across different namespaces.
+	// Similar bugs are shown only across namespaces with the same value of SimilarityDomain.
+	SimilarityDomain string
 	// Per-namespace clients that act only on a particular namespace.
 	Clients map[string]string
 	// A unique key for hashing, can be anything.
@@ -65,6 +71,11 @@ type Config struct {
 	TransformCrash func(build *Build, crash *dashapi.Crash) bool
 	// NeedRepro hook can be used to prevent reproduction of some bugs.
 	NeedRepro func(bug *Bug) bool
+	// List of kernel repositories for this namespace.
+	// The first repo considered the "main" repo (e.g. fixing commit info is shown against this repo).
+	// Other repos are secondary repos, they may be tested or not.
+	// If not tested they are used to poll for fixing commits.
+	Repos []KernelRepo
 }
 
 // ConfigManager describes a single syz-manager instance.
@@ -93,32 +104,40 @@ type Reporting struct {
 	Filter ReportingFilter
 	// How many new bugs report per day.
 	DailyLimit int
+	// Upstream reports into next reporting after this period.
+	Embargo time.Duration
 	// Type of reporting and its configuration.
 	// The app has one built-in type, EmailConfig, which reports bugs by email.
 	// And ExternalConfig which can be used to attach any external reporting system (e.g. Bugzilla).
 	Config ReportingType
+
+	// Set for all but last reporting stages.
+	moderation bool
 }
 
 type ReportingType interface {
 	// Type returns a unique string that identifies this reporting type (e.g. "email").
 	Type() string
-	// NeedMaintainers says if this reporting requires non-empty maintainers list.
-	NeedMaintainers() bool
 	// Validate validates the current object, this is called only during init.
 	Validate() error
 }
 
 type KernelRepo struct {
+	URL    string
+	Branch string
 	// Alias is a short, readable name of a kernel repository.
 	Alias string
 	// ReportingPriority says if we need to prefer to report crashes in this
 	// repo over crashes in repos with lower value. Must be in [0-9] range.
 	ReportingPriority int
+	// Additional CC list to add to all bugs reported on this repo.
+	CC []string
 }
 
 var (
-	clientNameRe = regexp.MustCompile("^[a-zA-Z0-9-_]{4,100}$")
-	clientKeyRe  = regexp.MustCompile("^[a-zA-Z0-9]{16,128}$")
+	namespaceNameRe = regexp.MustCompile("^[a-zA-Z0-9-_.]{4,32}$")
+	clientNameRe    = regexp.MustCompile("^[a-zA-Z0-9-_.]{4,100}$")
+	clientKeyRe     = regexp.MustCompile("^[a-zA-Z0-9]{16,128}$")
 )
 
 type (
@@ -148,7 +167,7 @@ var config *GlobalConfig
 
 func init() {
 	// Prevents gometalinter from considering everything as dead code.
-	if false {
+	if false && isAppEngineTest {
 		installConfig(nil)
 	}
 }
@@ -157,7 +176,14 @@ func installConfig(cfg *GlobalConfig) {
 	if config != nil {
 		panic("another config is already installed")
 	}
-	// Validate the global cfg.
+	checkConfig(cfg)
+	config = cfg
+	initEmailReporting()
+	initHTTPHandlers()
+	initAPIHandlers()
+}
+
+func checkConfig(cfg *GlobalConfig) {
 	if len(cfg.Namespaces) == 0 {
 		panic("no namespaces found")
 	}
@@ -168,26 +194,17 @@ func installConfig(cfg *GlobalConfig) {
 	clientNames := make(map[string]bool)
 	checkClients(clientNames, cfg.Clients)
 	checkConfigAccessLevel(&cfg.AccessLevel, AccessPublic, "global")
+	if cfg.Namespaces[cfg.DefaultNamespace] == nil {
+		panic(fmt.Sprintf("default namespace %q is not found", cfg.DefaultNamespace))
+	}
 	for ns, cfg := range cfg.Namespaces {
 		checkNamespace(ns, cfg, namespaces, clientNames)
 	}
-	for repo, info := range cfg.KernelRepos {
-		if info.Alias == "" {
-			panic(fmt.Sprintf("empty kernel repo alias for %q", repo))
-		}
-		if prio := info.ReportingPriority; prio < 0 || prio > 9 {
-			panic(fmt.Sprintf("bad kernel repo reporting priority %v for %q", prio, repo))
-		}
-	}
-	config = cfg
-	initEmailReporting()
-	initHTTPHandlers()
-	initAPIHandlers()
 }
 
 func checkNamespace(ns string, cfg *Config, namespaces, clientNames map[string]bool) {
-	if ns == "" {
-		panic("empty namespace name")
+	if !namespaceNameRe.MatchString(ns) {
+		panic(fmt.Sprintf("bad namespace name: %q", ns))
 	}
 	if namespaces[ns] {
 		panic(fmt.Sprintf("duplicate namespace %q", ns))
@@ -195,6 +212,9 @@ func checkNamespace(ns string, cfg *Config, namespaces, clientNames map[string]b
 	namespaces[ns] = true
 	if cfg.DisplayTitle == "" {
 		cfg.DisplayTitle = ns
+	}
+	if cfg.SimilarityDomain == "" {
+		cfg.SimilarityDomain = ns
 	}
 	checkClients(clientNames, cfg.Clients)
 	for name, mgr := range cfg.Managers {
@@ -216,6 +236,36 @@ func checkNamespace(ns string, cfg *Config, namespaces, clientNames map[string]b
 			return true
 		}
 	}
+	checkKernelRepos(ns, cfg)
+	checkNamespaceReporting(ns, cfg)
+}
+
+func checkKernelRepos(ns string, cfg *Config) {
+	if len(cfg.Repos) == 0 {
+		panic(fmt.Sprintf("no repos in namespace %q", ns))
+	}
+	for _, repo := range cfg.Repos {
+		if !vcs.CheckRepoAddress(repo.URL) {
+			panic(fmt.Sprintf("%v: bad repo URL %q", ns, repo.URL))
+		}
+		if !vcs.CheckBranch(repo.Branch) {
+			panic(fmt.Sprintf("%v: bad repo branch %q", ns, repo.Branch))
+		}
+		if repo.Alias == "" {
+			panic(fmt.Sprintf("%v: empty repo alias for %q", ns, repo.Alias))
+		}
+		if prio := repo.ReportingPriority; prio < 0 || prio > 9 {
+			panic(fmt.Sprintf("%v: bad kernel repo reporting priority %v for %q", ns, prio, repo.Alias))
+		}
+		for _, email := range repo.CC {
+			if _, err := mail.ParseAddress(email); err != nil {
+				panic(fmt.Sprintf("bad email address %q: %v", email, err))
+			}
+		}
+	}
+}
+
+func checkNamespaceReporting(ns string, cfg *Config) {
 	checkConfigAccessLevel(&cfg.AccessLevel, cfg.AccessLevel, fmt.Sprintf("namespace %q", ns))
 	parentAccessLevel := cfg.AccessLevel
 	reportingNames := make(map[string]bool)
@@ -230,6 +280,10 @@ func checkNamespace(ns string, cfg *Config, namespaces, clientNames map[string]b
 		}
 		if reporting.DisplayTitle == "" {
 			reporting.DisplayTitle = reporting.Name
+		}
+		reporting.moderation = ri < len(cfg.Reporting)-1
+		if !reporting.moderation && reporting.Embargo != 0 {
+			panic(fmt.Sprintf("embargo in the last reporting %v", reporting.Name))
 		}
 		checkConfigAccessLevel(&reporting.AccessLevel, parentAccessLevel,
 			fmt.Sprintf("reporting %q/%q", ns, reporting.Name))

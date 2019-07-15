@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # Copyright 2018 syzkaller project authors. All rights reserved.
 # Use of this source code is governed by Apache 2 LICENSE that can be found in
@@ -10,8 +10,8 @@
 
 set -eu -o pipefail
 
-readonly MIRROR="${MIRROR:-cloudflare.cdn.openbsd.org}"
-readonly VERSION="${VERSION:-6.4}"
+readonly MIRROR="${MIRROR:-cdn.openbsd.org}"
+readonly VERSION="${VERSION:-6.5}"
 readonly DOWNLOAD_VERSION="${DOWNLOAD_VERSION:-snapshots}"
 readonly RELNO="${2:-${VERSION/./}}"
 
@@ -26,15 +26,17 @@ if [[ ! -f "${ISO}" ]]; then
 fi
 
 # Create custom siteXX.tgz set.
-mkdir -p etc
+rm -fr etc && mkdir -p etc
 cat >install.site <<EOF
 #!/bin/sh
-set -x
-syspatch
-pkg_add -iv bash git go
+PKGS="bash gcc%8 git gmake go llvm nano wget"
+PKG_PATH=https://${MIRROR}/pub/OpenBSD/${DOWNLOAD_VERSION}/packages/${ARCH}/ pkg_add -I \$PKGS
+PKG_PATH= pkg_info -I \$PKGS && echo pkg_add OK
 
 echo 'set tty com0' > boot.conf
 echo 'PasswordAuthentication no' >> /etc/ssh/sshd_config
+echo 'pass in on egress proto tcp from any to any port 80 rdr-to 127.0.0.1 port 8080' >> /etc/pf.conf
+echo 'permit keepenv nopass syzkaller as root' > /etc/doas.conf
 
 mkdir /syzkaller
 echo '/dev/sd1a /syzkaller ffs rw,noauto 1 0' >> /etc/fstab
@@ -43,17 +45,47 @@ EOF
 cat >etc/installurl <<EOF
 https://${MIRROR}/pub/OpenBSD
 EOF
+
 cat >etc/rc.local <<EOF
 (
-  set -x
+  nc metadata.google.internal 80 <<EOF2 | tail -n1 > /etc/myname.gce \
+  && echo >> /etc/myname.gce \
+  && mv /etc/myname{.gce,} \
+  && hostname \$(cat /etc/myname)
+GET /computeMetadata/v1/instance/hostname HTTP/1.0
+Host: metadata.google.internal
+Metadata-Flavor: Google
+
+EOF2
+  set -eux
 
   echo "starting syz-ci"
   fsck -y /dev/sd1a
   mount /syzkaller
+  su -l syzkaller <<EOF2
+    cd /syzkaller
+    set -eux
+    ulimit -d 8000000
+    test -x syz-ci || (
+         go get github.com/google/syzkaller/syz-ci &&
+         go build github.com/google/syzkaller/syz-ci)
+    ./syz-ci -config ./config-openbsd.ci 2>&1 | tee syz-ci.log &
+EOF2
 )
 EOF
 chmod +x install.site
-tar --owner=root --group=root -zcvf site${RELNO}.tgz install.site etc/{installurl,rc.local}
+
+cat >etc/rc.conf.local <<EOF
+slaacd_flags=NO
+smtpd_flags=NO
+sndiod_flags=NO
+EOF
+
+cat >etc/sysctl.conf <<EOF
+hw.smt=1
+EOF
+
+tar --owner=root --group=root -zcvf site${RELNO}.tgz install.site etc/*
 
 # Autoinstall script.
 cat >auto_install.conf <<EOF
@@ -76,9 +108,10 @@ What timezone = US/Pacific
 Which disk = sd0
 Use (W)hole disk or (E)dit the MBR = whole
 Use (A)uto layout, (E)dit auto layout, or create (C)ustom layout = auto
-URL to autopartitioning template for disklabel = file://disklabel.template
-Set name(s) = +* -bsd.rd* -x* -game* done
+URL to autopartitioning template for disklabel = file:/disklabel.template
+Set name(s) = +* -x* -game* done
 Directory does not contain SHA256.sig. Continue without verification = yes
+Location of sets = cd0
 EOF
 
 # Disklabel template.
@@ -103,12 +136,12 @@ rm -f disk.raw
 qemu-img create -f raw disk.raw 10G
 
 # Run the installer to create the disk image.
-expect <<EOF
+expect 2>&1 <<EOF | tee install_log
 set timeout 1800
 
 spawn qemu-system-x86_64 -nographic -smp 2 \
   -drive if=virtio,file=disk.raw,format=raw -cdrom "${ISO_PATCHED}" \
-  -net nic,model=virtio -net user -boot once=d
+  -net nic,model=virtio -net user -boot once=d -m 4000 -enable-kvm
 
 expect timeout { exit 1 } "boot>"
 send "\n"
@@ -155,9 +188,12 @@ expect {
 }
 EOF
 
+grep 'pkg_add OK' install_log > /dev/null \
+    || { echo Package installation failed. Inspect install_log. 2>&1 ; exit 1; }
+
 # Create Compute Engine disk image.
 echo "Archiving disk.raw... (this may take a while)"
-i="openbsd-${ARCH}-gce.tar.gz"
+i="openbsd-${ARCH}-${RELNO}-gce.tar.gz"
 tar -Szcf "$i" disk.raw
 
 cat <<EOF
@@ -167,4 +203,5 @@ To create GCE image run the following commands:
 
 gsutil cp -a public-read "$i" gs://syzkaller/
 gcloud compute images create ci-openbsd-root --source-uri gs://syzkaller/"$i"
+
 EOF

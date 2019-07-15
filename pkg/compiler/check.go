@@ -6,6 +6,7 @@
 package compiler
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -178,7 +179,7 @@ func (comp *compiler) checkFieldGroup(fields []*ast.Field, what, ctx string) {
 	existing := make(map[string]bool)
 	for _, f := range fields {
 		fn := f.Name.Name
-		if fn == "parent" {
+		if fn == prog.ParentRef || fn == prog.SyscallRef {
 			comp.error(f.Pos, "reserved %v name %v in %v", what, fn, ctx)
 		}
 		if existing[fn] {
@@ -284,18 +285,35 @@ func (comp *compiler) checkAttributeValues() {
 }
 
 func (comp *compiler) checkLenTargets() {
+	warned := make(map[string]bool)
 	for _, decl := range comp.desc.Nodes {
 		switch n := decl.(type) {
 		case *ast.Call:
 			for _, arg := range n.Args {
-				comp.checkLenType(arg.Type, arg.Name.Name, n.Args, nil, make(map[string]bool), true)
+				checked := make(map[string]bool)
+				parents := []parentDesc{{fields: n.Args}}
+				comp.checkLenType(arg.Type, arg.Type, parents, checked, warned, true)
 			}
 		}
 	}
 }
 
-func (comp *compiler) checkLenType(t *ast.Type, name string, fields []*ast.Field,
-	parents []*ast.Struct, checked map[string]bool, isArg bool) {
+type parentDesc struct {
+	name   string
+	fields []*ast.Field
+}
+
+func parentTargetName(s *ast.Struct) string {
+	parentName := s.Name.Name
+	if pos := strings.IndexByte(parentName, '['); pos != -1 {
+		// For template parents name is "struct_name[ARG1, ARG2]", strip the part after '['.
+		parentName = parentName[:pos]
+	}
+	return parentName
+}
+
+func (comp *compiler) checkLenType(t0, t *ast.Type, parents []parentDesc,
+	checked, warned map[string]bool, isArg bool) {
 	desc := comp.getTypeDesc(t)
 	if desc == typeStruct {
 		s := comp.structs[t.Ident]
@@ -304,78 +322,127 @@ func (comp *compiler) checkLenType(t *ast.Type, name string, fields []*ast.Field
 			return
 		}
 		checked[s.Name.Name] = true
-		parents = append(parents, s)
-		if !s.IsUnion {
-			fields = s.Fields
+		fields := s.Fields
+		if s.IsUnion {
+			fields = nil
 		}
+		parentName := parentTargetName(s)
+		parents = append(parents, parentDesc{name: parentName, fields: fields})
 		for _, fld := range s.Fields {
-			comp.checkLenType(fld.Type, fld.Name.Name, fields, parents, checked, false)
+			comp.checkLenType(fld.Type, fld.Type, parents, checked, warned, false)
 		}
+		warned[parentName] = true
 		return
 	}
 	_, args, _ := comp.getArgsBase(t, "", prog.DirIn, isArg)
 	for i, arg := range args {
 		argDesc := desc.Args[i]
 		if argDesc.Type == typeArgLenTarget {
-			comp.checkLenTarget(t, name, arg.Ident, fields, parents)
+			comp.checkLenTarget(arg, t0, t, parents, warned)
 		} else if argDesc.Type == typeArgType {
-			comp.checkLenType(arg, name, fields, parents, checked, argDesc.IsArg)
+			comp.checkLenType(t0, arg, parents, checked, warned, argDesc.IsArg)
 		}
 	}
 }
 
-func (comp *compiler) checkLenTarget(t *ast.Type, name, target string, fields []*ast.Field, parents []*ast.Struct) {
-	if target == name {
-		comp.error(t.Pos, "%v target %v refer to itself", t.Ident, target)
-		return
-	}
-	if target == "parent" {
-		if len(parents) == 0 {
-			comp.error(t.Pos, "%v target %v does not exist", t.Ident, target)
+func (comp *compiler) checkLenTarget(arg, t0, t *ast.Type, parents []parentDesc, warned map[string]bool) {
+	targets := append([]*ast.Type{arg}, arg.Colon...)
+	for i, target := range targets {
+		if target.Ident == prog.ParentRef && len(targets) != 1 {
+			comp.error(target.Pos, "%v can't be part of path expressions", prog.ParentRef)
+			return
 		}
+		if target.Ident == prog.SyscallRef {
+			if i != 0 {
+				comp.error(target.Pos, "syscall can't be in the middle of path expressions")
+				return
+			}
+			if len(targets) == 1 {
+				comp.error(targets[0].Pos, "no argument name after syscall reference")
+				return
+			}
+		}
+	}
+	comp.checkLenTargetRec(t0, t, targets, parents, warned)
+}
+
+func (comp *compiler) checkLenTargetRec(t0, t *ast.Type, targets []*ast.Type,
+	parents []parentDesc, warned map[string]bool) {
+	if len(targets) == 0 {
 		return
 	}
+	target := targets[0]
+	targets = targets[1:]
+	fields := parents[len(parents)-1].fields
 	for _, fld := range fields {
-		if target != fld.Name.Name {
+		if target.Ident != fld.Name.Name {
 			continue
 		}
-		if fld.Type == t {
-			comp.error(t.Pos, "%v target %v refer to itself", t.Ident, target)
+		if fld.Type == t0 {
+			comp.error(target.Pos, "%v target %v refers to itself", t.Ident, target.Ident)
+			return
 		}
-		if t.Ident == "len" {
-			inner := fld.Type
-			desc, args, _ := comp.getArgsBase(inner, "", prog.DirIn, false)
-			for desc == typePtr {
-				if desc != typePtr {
-					break
+		if len(targets) == 0 {
+			if t.Ident == "len" {
+				typ, desc := comp.derefPointers(fld.Type)
+				if desc == typeArray && comp.isVarlen(typ.Args[0]) {
+					// We can reach the same struct multiple times starting from different
+					// syscall arguments. Warn only once.
+					if !warned[parents[len(parents)-1].name] {
+						comp.warning(target.Pos, "len target %v refer to an array with"+
+							" variable-size elements (do you mean bytesize?)",
+							target.Ident)
+					}
 				}
-				inner = args[1]
-				desc, args, _ = comp.getArgsBase(inner, "", prog.DirIn, false)
 			}
-			if desc == typeArray && comp.isVarlen(args[0]) {
-				comp.warning(t.Pos, "len target %v refer to an array with"+
-					" variable-size elements (do you mean bytesize?)", target)
-			}
+			return
 		}
+		typ, desc := comp.derefPointers(fld.Type)
+		if desc != typeStruct {
+			comp.error(target.Pos, "%v path %v does not refer to a struct", t.Ident, target.Ident)
+			return
+		}
+		s := comp.structs[typ.Ident]
+		if s.IsUnion {
+			comp.error(target.Pos, "%v path %v does not refer to a struct", t.Ident, target.Ident)
+			return
+		}
+		parents = append(parents, parentDesc{name: parentTargetName(s), fields: s.Fields})
+		comp.checkLenTargetRec(t0, t, targets, parents, warned)
 		return
 	}
-	for _, parent := range parents {
-		parentName := parent.Name.Name
-		if pos := strings.IndexByte(parentName, '['); pos != -1 {
-			// For template parents name is "struct_name[ARG1, ARG2]", strip the part after '['.
-			parentName = parentName[:pos]
-		}
-		if target == parentName {
+	for pi := len(parents) - 1; pi >= 0; pi-- {
+		parent := parents[pi]
+		if parent.name != "" && (parent.name == target.Ident || target.Ident == prog.ParentRef) ||
+			parent.name == "" && target.Ident == prog.SyscallRef {
+			if len(targets) == 0 {
+				if t.Ident == "offsetof" {
+					comp.error(target.Pos, "%v must refer to fields", t.Ident)
+					return
+				}
+			} else {
+				parents1 := make([]parentDesc, pi+1)
+				copy(parents1, parents[:pi+1])
+				comp.checkLenTargetRec(t0, t, targets, parents1, warned)
+			}
 			return
 		}
 	}
-	comp.error(t.Pos, "%v target %v does not exist", t.Ident, target)
+	comp.error(target.Pos, "%v target %v does not exist", t.Ident, target.Ident)
 }
 
-func CollectUnused(desc *ast.Description, target *targets.Target) []ast.Node {
-	comp := createCompiler(desc, target, nil)
+func CollectUnused(desc *ast.Description, target *targets.Target, eh ast.ErrorHandler) ([]ast.Node, error) {
+	comp := createCompiler(desc, target, eh)
 	comp.typecheck()
-	return comp.collectUnused()
+	if comp.errors > 0 {
+		return nil, errors.New("typecheck failed")
+	}
+
+	nodes := comp.collectUnused()
+	if comp.errors > 0 {
+		return nil, errors.New("collectUnused failed")
+	}
+	return nodes, nil
 }
 
 func (comp *compiler) collectUnused() []ast.Node {
@@ -652,8 +719,8 @@ func (comp *compiler) checkStruct(ctx checkCtx, n *ast.Struct) {
 			comp.error(attr.Pos, "unexpected %v, expect attribute", unexpected)
 			return
 		}
-		if attr.HasColon {
-			comp.error(attr.Pos2, "unexpected ':'")
+		if len(attr.Colon) != 0 {
+			comp.error(attr.Colon[0].Pos, "unexpected ':'")
 			return
 		}
 	}
@@ -728,13 +795,13 @@ func (comp *compiler) checkType(ctx checkCtx, t *ast.Type, flags checkFlags) {
 }
 
 func (comp *compiler) checkTypeBasic(t *ast.Type, desc *typeDesc, flags checkFlags) {
-	if t.HasColon {
-		if !desc.AllowColon {
-			comp.error(t.Pos2, "unexpected ':'")
+	for i, col := range t.Colon {
+		if i >= desc.MaxColon {
+			comp.error(col.Pos, "unexpected ':'")
 			return
 		}
 		if flags&checkIsStruct == 0 {
-			comp.error(t.Pos2, "unexpected ':', only struct fields can be bitfields")
+			comp.error(col.Pos, "unexpected ':', only struct fields can be bitfields")
 			return
 		}
 	}
@@ -742,7 +809,8 @@ func (comp *compiler) checkTypeBasic(t *ast.Type, desc *typeDesc, flags checkFla
 		comp.error(t.Pos, "%v can't be type alias target", t.Ident)
 		return
 	}
-	if flags&checkIsResourceBase != 0 && !desc.ResourceBase {
+	if flags&checkIsResourceBase != 0 &&
+		(desc.CanBeResourceBase == nil || !desc.CanBeResourceBase(comp, t)) {
 		comp.error(t.Pos, "%v can't be resource base (int types can)", t.Ident)
 		return
 	}
@@ -796,7 +864,7 @@ func (comp *compiler) checkTypeArgs(t *ast.Type, desc *typeDesc, flags checkFlag
 func (comp *compiler) replaceTypedef(ctx *checkCtx, t *ast.Type, flags checkFlags) {
 	typedefName := t.Ident
 	comp.usedTypedefs[typedefName] = true
-	if t.HasColon {
+	if len(t.Colon) != 0 {
 		comp.error(t.Pos, "type alias %v with ':'", t.Ident)
 		return
 	}
@@ -852,8 +920,9 @@ func (comp *compiler) replaceTypedef(ctx *checkCtx, t *ast.Type, flags checkFlag
 	t.Pos = pos0
 
 	// Remove base type if it's not needed in this context.
+	// If desc is nil, will return an error later when we typecheck the result.
 	desc := comp.getTypeDesc(t)
-	if flags&checkIsArg != 0 && desc.NeedBase {
+	if desc != nil && flags&checkIsArg != 0 && desc.NeedBase {
 		baseTypePos := len(t.Args) - 1
 		if t.Args[baseTypePos].Ident == "opt" {
 			baseTypePos--
@@ -893,9 +962,12 @@ func (comp *compiler) instantiate(templ ast.Node, params []*ast.Ident, args []*a
 		// Need more checks here. E.g. that CONST_ARG does not have subargs.
 		// And if CONST_ARG is a value, then use concreteArg.Value.
 		// Also need to error if CONST_ARG is a string.
-		if concreteArg := argMap[templArg.Ident2]; concreteArg != nil {
-			templArg.Ident2 = concreteArg.Ident
-			templArg.Pos2 = concreteArg.Pos
+		if len(templArg.Colon) != 0 {
+			col := templArg.Colon[0]
+			if concreteArg := argMap[col.Ident]; concreteArg != nil {
+				col.Ident = concreteArg.Ident
+				col.Pos = concreteArg.Pos
+			}
 		}
 	}))
 	return err0 == comp.errors
@@ -921,9 +993,17 @@ func (comp *compiler) checkTypeArg(t, arg *ast.Type, argDesc namedArg) {
 			return
 		}
 	}
-	if !desc.AllowColon && arg.HasColon {
-		comp.error(arg.Pos2, "unexpected ':'")
-		return
+	for i, col := range arg.Colon {
+		if i >= desc.MaxColon {
+			comp.error(col.Pos, "unexpected ':'")
+			return
+		}
+		if desc.Kind == kindIdent {
+			if unexpected, expect, ok := checkTypeKind(col, kindIdent); !ok {
+				comp.error(arg.Pos, "unexpected %v after colon, expect %v", unexpected, expect)
+				return
+			}
+		}
 	}
 	if len(arg.Args) > desc.MaxArgs {
 		comp.error(arg.Pos, "%v argument has subargs", argDesc.Name)

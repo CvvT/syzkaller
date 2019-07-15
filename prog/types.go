@@ -8,12 +8,13 @@ import (
 )
 
 type Syscall struct {
-	ID       int
-	NR       uint64 // kernel syscall number
-	Name     string
-	CallName string
-	Args     []Type
-	Ret      Type
+	ID          int
+	NR          uint64 // kernel syscall number
+	Name        string
+	CallName    string
+	MissingArgs int // number of trailing args that should be zero-filled
+	Args        []Type
+	Ret         Type
 }
 
 type Dir int
@@ -60,7 +61,7 @@ type Type interface {
 	BitfieldLength() uint64
 	BitfieldMiddle() bool // returns true for all but last bitfield in a group
 
-	makeDefaultArg() Arg
+	DefaultArg() Arg
 	isDefaultArg(arg Arg) bool
 	generate(r *randGen, s *state) (arg Arg, calls []*Call)
 	mutate(r *randGen, s *state, arg Arg, ctx ArgCtx) (calls []*Call, retry, preserve bool)
@@ -143,7 +144,7 @@ func (t *ResourceType) String() string {
 	return t.Name()
 }
 
-func (t *ResourceType) makeDefaultArg() Arg {
+func (t *ResourceType) DefaultArg() Arg {
 	return MakeResultArg(t, nil, t.Default())
 }
 
@@ -199,7 +200,7 @@ type ConstType struct {
 	IsPad bool
 }
 
-func (t *ConstType) makeDefaultArg() Arg {
+func (t *ConstType) DefaultArg() Arg {
 	return MakeConstArg(t, t.Val)
 }
 
@@ -229,7 +230,7 @@ type IntType struct {
 	RangeEnd   uint64
 }
 
-func (t *IntType) makeDefaultArg() Arg {
+func (t *IntType) DefaultArg() Arg {
 	return MakeConstArg(t, 0)
 }
 
@@ -243,7 +244,7 @@ type FlagsType struct {
 	BitMask bool
 }
 
-func (t *FlagsType) makeDefaultArg() Arg {
+func (t *FlagsType) DefaultArg() Arg {
 	return MakeConstArg(t, 0)
 }
 
@@ -254,10 +255,11 @@ func (t *FlagsType) isDefaultArg(arg Arg) bool {
 type LenType struct {
 	IntTypeCommon
 	BitSize uint64 // want size in multiple of bits instead of array size
-	Buf     string
+	Offset  bool   // offset from the beginning of the parent struct or base object
+	Path    []string
 }
 
-func (t *LenType) makeDefaultArg() Arg {
+func (t *LenType) DefaultArg() Arg {
 	return MakeConstArg(t, 0)
 }
 
@@ -276,7 +278,7 @@ const (
 	procDefaultValue = 0xffffffffffffffff // special value denoting 0 for all procs
 )
 
-func (t *ProcType) makeDefaultArg() Arg {
+func (t *ProcType) DefaultArg() Arg {
 	return MakeConstArg(t, procDefaultValue)
 }
 
@@ -302,7 +304,7 @@ func (t *CsumType) String() string {
 	return "csum"
 }
 
-func (t *CsumType) makeDefaultArg() Arg {
+func (t *CsumType) DefaultArg() Arg {
 	return MakeConstArg(t, 0)
 }
 
@@ -320,7 +322,7 @@ func (t *VmaType) String() string {
 	return "vma"
 }
 
-func (t *VmaType) makeDefaultArg() Arg {
+func (t *VmaType) DefaultArg() Arg {
 	return MakeSpecialPointerArg(t, 0)
 }
 
@@ -365,7 +367,7 @@ func (t *BufferType) String() string {
 	return "buffer"
 }
 
-func (t *BufferType) makeDefaultArg() Arg {
+func (t *BufferType) DefaultArg() Arg {
 	if t.Dir() == DirOut {
 		var sz uint64
 		if !t.Varlen() {
@@ -418,11 +420,11 @@ func (t *ArrayType) String() string {
 	return fmt.Sprintf("array[%v]", t.Type.String())
 }
 
-func (t *ArrayType) makeDefaultArg() Arg {
+func (t *ArrayType) DefaultArg() Arg {
 	var elems []Arg
 	if t.Kind == ArrayRangeLen && t.RangeBegin == t.RangeEnd {
 		for i := uint64(0); i < t.RangeBegin; i++ {
-			elems = append(elems, t.Type.makeDefaultArg())
+			elems = append(elems, t.Type.DefaultArg())
 		}
 	}
 	return MakeGroupArg(t, elems)
@@ -450,11 +452,11 @@ func (t *PtrType) String() string {
 	return fmt.Sprintf("ptr[%v, %v]", t.Dir(), t.Type.String())
 }
 
-func (t *PtrType) makeDefaultArg() Arg {
+func (t *PtrType) DefaultArg() Arg {
 	if t.Optional() {
 		return MakeSpecialPointerArg(t, 0)
 	}
-	return MakePointerArg(t, 0, t.Type.makeDefaultArg())
+	return MakePointerArg(t, 0, t.Type.DefaultArg())
 }
 
 func (t *PtrType) isDefaultArg(arg Arg) bool {
@@ -479,10 +481,10 @@ func (t *StructType) FieldName() string {
 	return t.FldName
 }
 
-func (t *StructType) makeDefaultArg() Arg {
+func (t *StructType) DefaultArg() Arg {
 	inner := make([]Arg, len(t.Fields))
 	for i, field := range t.Fields {
-		inner[i] = field.makeDefaultArg()
+		inner[i] = field.DefaultArg()
 	}
 	return MakeGroupArg(t, inner)
 }
@@ -511,8 +513,8 @@ func (t *UnionType) FieldName() string {
 	return t.FldName
 }
 
-func (t *UnionType) makeDefaultArg() Arg {
-	return MakeUnionArg(t, t.Fields[0].makeDefaultArg())
+func (t *UnionType) DefaultArg() Arg {
+	return MakeUnionArg(t, t.Fields[0].DefaultArg())
 }
 
 func (t *UnionType) isDefaultArg(arg Arg) bool {

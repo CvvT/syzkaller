@@ -2,6 +2,7 @@
 # Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
 include <sys/types.h>
+include <sys/ioctl.h>
 include <sys/mman.h>
 include <sys/stat.h>
 include <fcntl.h>
@@ -23,10 +24,12 @@ pipe(pipefd ptr[out, pipefd])
 stat(file ptr[in, filename], statbuf ptr[out, stat])
 lstat(file ptr[in, filename], statbuf ptr[out, stat])
 
+chflags(file ptr[in, filename], flags flags[chflags_flags])
+fchflags(fd fd, flags flags[chflags_flags])
+chflagsat(dirfd fd_dir, file ptr[in, filename], flags flags[chflags_flags], atflags flags[chflagsat_flags])
+
 poll(fds ptr[in, array[pollfd]], nfds len[fds], timeout int32)
 select(n len[inp], inp ptr[inout, fd_set], outp ptr[inout, fd_set], exp ptr[inout, fd_set], tvp ptr[inout, timeval])
-
-mincore(addr vma, size len[addr], vec buffer[out])
 
 fcntl$dupfd(fd fd, cmd flags[fcntl_dupfd], arg fd) fd
 fcntl$getflags(fd fd, cmd flags[fcntl_getflags])
@@ -35,6 +38,12 @@ fcntl$setstatus(fd fd, cmd const[F_SETFL], flags flags[fcntl_status])
 fcntl$lock(fd fd, cmd flags[fcntl_lock], lock ptr[in, flock])
 fcntl$getown(fd fd, cmd const[F_GETOWN]) pid
 fcntl$setown(fd fd, cmd const[F_SETOWN], pid pid)
+
+ioctl$FIOASYNC(fd fd, cmd const[FIOASYNC], arg ptr[in, int32])
+ioctl$FIOGETOWN(fd fd, cmd const[FIOGETOWN], arg ptr[out, int32])
+ioctl$FIONBIO(fd fd, cmd const[FIONBIO], arg ptr[in, int32])
+ioctl$FIONREAD(fd fd, cmd const[FIONREAD], arg ptr[out, int32])
+ioctl$FIOSETOWN(fd fd, cmd const[FIOSETOWN], arg ptr[in, int32])
 
 mknod(file ptr[in, filename], mode flags[mknod_mode], dev int32)
 mknod$loop(file ptr[in, filename], mode flags[mknod_mode], dev proc[1792, 2])
@@ -83,8 +92,8 @@ renameat(oldfd fd_dir, old ptr[in, filename], newfd fd_dir, new ptr[in, filename
 mkdir(path ptr[in, filename], mode flags[open_mode])
 mkdirat(fd fd_dir, path ptr[in, filename], mode flags[open_mode])
 rmdir(path ptr[in, filename])
-truncate(file ptr[in, filename], len intptr)
-ftruncate(fd fd, len intptr)
+truncate(file ptr[in, filename], pad const[0], len intptr)
+ftruncate(fd fd, pad const[0], len intptr)
 flock(fd fd, op flags[flock_op])
 fsync(fd fd)
 # fdatasync(fd fd)
@@ -109,6 +118,9 @@ wait4(pid pid, status ptr[out, int32, opt], options flags[wait_options], ru ptr[
 
 pledge(promises ptr[in, string], execpromises ptr[in, string])
 unveil(path ptr[in, filename], permissions ptr[in, string[unveil_permissions]])
+
+openat$null(fd const[AT_FDCWD], file ptr[in, string["/dev/null"]], flags flags[open_flags], mode const[0]) fd
+openat$zero(fd const[AT_FDCWD], file ptr[in, string["/dev/zero"]], flags flags[open_flags], mode const[0]) fd
 
 pollfd {
 	fd	fd
@@ -188,6 +200,8 @@ ucred {
 	gid	gid
 }
 
+chflags_flags = UF_NODUMP, UF_IMMUTABLE, UF_APPEND, SF_ARCHIVED, SF_IMMUTABLE, SF_APPEND
+chflagsat_flags = AT_SYMLINK_NOFOLLOW
 pollfd_events = POLLIN, POLLPRI, POLLOUT, POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, POLLRDBAND, POLLWRNORM, POLLWRBAND
 mknod_mode = S_IFMT, S_IFREG, S_IFCHR, S_IFBLK, S_IFIFO, S_IFSOCK, S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH
 at_flags = AT_SYMLINK_NOFOLLOW, AT_SYMLINK_FOLLOW

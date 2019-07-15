@@ -52,7 +52,7 @@ func (ctx akaros) build(targetArch, vmType, kernelDir, outputDir, compiler, user
 		return err
 	}
 	targetKey := filepath.Join(kernelDir, "kern", "kfs", ".ssh", "authorized_keys")
-	if err := os.Rename(sshkeyPub, targetKey); err != nil {
+	if err := osutil.Rename(sshkeyPub, targetKey); err != nil {
 		return err
 	}
 	const init = `#!/bin/bash
@@ -86,21 +86,21 @@ bash
 		return fmt.Errorf("failed to write image file: %v", err)
 	}
 	for src, dst := range map[string]string{
-		".config": "kernel.config",
-		"key":     "key",
+		".config":                    "kernel.config",
+		"key":                        "key",
 		"obj/kern/akaros-kernel":     "kernel",
 		"obj/kern/akaros-kernel-64b": "obj/akaros-kernel-64b",
 	} {
 		fullSrc := filepath.Join(kernelDir, filepath.FromSlash(src))
 		fullDst := filepath.Join(outputDir, filepath.FromSlash(dst))
 		if err := osutil.CopyFile(fullSrc, fullDst); err != nil {
-			return fmt.Errorf("faied to copy %v: %v", src, err)
+			return fmt.Errorf("failed to copy %v: %v", src, err)
 		}
 	}
 	return nil
 }
 
-func (ctx akaros) clean(kernelDir string) error {
+func (ctx akaros) clean(kernelDir, targetArch string) error {
 	// Note: this does not clean toolchain and elfutils.
 	return ctx.make(kernelDir, "", "realclean")
 }
@@ -123,8 +123,7 @@ func (ctx akaros) cmd(kernelDir, runDir string, bin string, args ...string) erro
 	cmd.Env = append(cmd.Env, []string{
 		"MAKE_JOBS=" + strconv.Itoa(runtime.NumCPU()),
 		"AKAROS_ROOT=" + kernelDir,
-		"AKAROS_XCC_ROOT=" + filepath.Join(kernelDir, "toolchain", "x86_64-ucb-akaros-gcc"),
-		"X86_64_INSTDIR=" + filepath.Join(kernelDir, "toolchain", "x86_64-ucb-akaros-gcc"),
+		"AKAROS_TOOLCHAINS=" + filepath.Join(kernelDir, "toolchain"),
 		"PATH=" + filepath.Join(kernelDir, "toolchain", "x86_64-ucb-akaros-gcc", "bin") +
 			string(filepath.ListSeparator) + os.Getenv("PATH"),
 	}...)

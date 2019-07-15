@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/syzkaller/pkg/hash"
+	"github.com/google/syzkaller/pkg/host"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/pkg/report"
@@ -21,6 +22,7 @@ func (mgr *Manager) hubSyncLoop() {
 		target:        mgr.target,
 		stats:         mgr.stats,
 		enabledCalls:  mgr.checkResult.EnabledCalls[mgr.cfg.Sandbox],
+		leak:          mgr.checkResult.Features[host.FeatureLeakChecking].Enabled,
 		fresh:         mgr.fresh,
 		hubReproQueue: mgr.hubReproQueue,
 	}
@@ -36,6 +38,7 @@ type HubConnector struct {
 	target         *prog.Target
 	stats          *Stats
 	enabledCalls   []int
+	leak           bool
 	fresh          bool
 	hubCorpus      map[hash.Sig]bool
 	newRepros      [][]byte
@@ -162,7 +165,7 @@ func (hc *HubConnector) processProgs(progs [][]byte) int {
 	dropped := 0
 	candidates := make([][]byte, 0, len(progs))
 	for _, inp := range progs {
-		if _, err := hc.target.Deserialize(inp); err != nil {
+		if _, err := hc.target.Deserialize(inp, prog.NonStrict); err != nil {
 			dropped++
 			continue
 		}
@@ -175,15 +178,23 @@ func (hc *HubConnector) processProgs(progs [][]byte) int {
 func (hc *HubConnector) processRepros(repros [][]byte) int {
 	dropped := 0
 	for _, repro := range repros {
-		if _, err := hc.target.Deserialize(repro); err != nil {
+		if _, err := hc.target.Deserialize(repro, prog.NonStrict); err != nil {
 			dropped++
 			continue
+		}
+		// On a leak instance we override repro type to leak,
+		// because otherwise repro package won't even enable leak detection
+		// and we won't reproduce leaks from other instances.
+		typ := report.Unknown
+		if hc.leak {
+			typ = report.MemoryLeak
 		}
 		hc.hubReproQueue <- &Crash{
 			vmIndex: -1,
 			hub:     true,
 			Report: &report.Report{
 				Title:  "external repro",
+				Type:   typ,
 				Output: repro,
 			},
 		}

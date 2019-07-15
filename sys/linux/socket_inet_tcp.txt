@@ -11,33 +11,20 @@ include <uapi/linux/tls.h>
 
 resource sock_tcp[sock_in]
 
-tcp_pair {
-	f0	sock_tcp
-	f1	sock_tcp
-}
-
 socket$inet_tcp(domain const[AF_INET], type const[SOCK_STREAM], proto const[0]) sock_tcp
-socketpair$inet_tcp(domain const[AF_INET], type const[SOCK_STREAM], proto const[0], fds ptr[out, tcp_pair])
 
 # From interface point of view SMC sockets seem to be the same as TCP.
 socket$inet_smc(domain const[AF_SMC], type const[SOCK_STREAM], proto const[0]) sock_tcp
-socketpair$inet_smc(domain const[AF_SMC], type const[SOCK_STREAM], proto const[0], fds ptr[out, tcp_pair])
 
 resource sock_tcp6[sock_in6]
 
-tcp6_pair {
-	f0	sock_tcp6
-	f1	sock_tcp6
-}
-
 socket$inet6_tcp(domain const[AF_INET6], type const[SOCK_STREAM], proto const[0]) sock_tcp6
-socketpair$inet6_tcp(domain const[AF_INET6], type const[SOCK_STREAM], proto const[0], fds ptr[out, tcp6_pair])
 
 # Generic TCP socket options
 
-tcp_option_types_int = TCP_NODELAY, TCP_MAXSEG, TCP_CORK, TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT, TCP_SYNCNT, TCP_LINGER2, TCP_DEFER_ACCEPT, TCP_WINDOW_CLAMP, TCP_QUICKACK, TCP_THIN_LINEAR_TIMEOUTS, TCP_THIN_DUPACK, TCP_USER_TIMEOUT, TCP_REPAIR, TCP_REPAIR_QUEUE, TCP_QUEUE_SEQ, TCP_FASTOPEN, TCP_FASTOPEN_CONNECT, TCP_FASTOPEN_NO_COOKIE, TCP_TIMESTAMP, TCP_NOTSENT_LOWAT, TCP_SAVE_SYN, TCP_INQ
+tcp_option_types_int = TCP_NODELAY, TCP_MAXSEG, TCP_CORK, TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT, TCP_SYNCNT, TCP_LINGER2, TCP_DEFER_ACCEPT, TCP_WINDOW_CLAMP, TCP_QUICKACK, TCP_THIN_LINEAR_TIMEOUTS, TCP_THIN_DUPACK, TCP_USER_TIMEOUT, TCP_FASTOPEN, TCP_FASTOPEN_CONNECT, TCP_FASTOPEN_NO_COOKIE, TCP_TIMESTAMP, TCP_NOTSENT_LOWAT, TCP_SAVE_SYN, TCP_INQ
 
-tcp_option_types_buf = TCP_INFO, TCP_CONGESTION, TCP_ULP, TCP_MD5SIG, TCP_REPAIR_OPTIONS, TCP_CC_INFO, TCP_SAVED_SYN, TCP_REPAIR_WINDOW, TCP_FASTOPEN_KEY
+tcp_option_types_buf = TCP_INFO, TCP_CONGESTION, TCP_ULP, TCP_MD5SIG, TCP_CC_INFO, TCP_SAVED_SYN, TCP_FASTOPEN_KEY
 
 getsockopt$inet_tcp_int(fd sock_tcp, level const[IPPROTO_TCP], optname flags[tcp_option_types_int], optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
 setsockopt$inet_tcp_int(fd sock_tcp, level const[IPPROTO_TCP], optname flags[tcp_option_types_int], optval ptr[in, int32], optlen len[optval])
@@ -53,8 +40,7 @@ getsockopt$inet_tcp_TCP_ZEROCOPY_RECEIVE(fd sock_tcp, level const[IPPROTO_TCP], 
 getsockopt$inet6_tcp_TCP_ZEROCOPY_RECEIVE(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TCP_ZEROCOPY_RECEIVE], optval ptr[in, tcp_zerocopy_receive], optlen ptr[inout, len[optval, int32]])
 
 tcp_zerocopy_receive {
-# TODO: this is 8-byte pointer that must be page-aligned, need vma64.
-	address		vma
+	address		vma64
 	length		len[address, int32]
 	recv_skip_hint	const[0, int32]
 }
@@ -72,6 +58,19 @@ setsockopt$inet6_tcp_TCP_ULP(fd sock_tcp6, level const[IPPROTO_TCP], optname con
 setsockopt$inet_tcp_TCP_MD5SIG(fd sock_tcp, level const[IPPROTO_TCP], optname const[TCP_MD5SIG], optval ptr[in, tcp_md5sig], optlen len[optval])
 setsockopt$inet6_tcp_TCP_MD5SIG(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TCP_MD5SIG], optval ptr[in, tcp_md5sig], optlen len[optval])
 
+setsockopt$inet_tcp_TCP_REPAIR(fd sock_tcp, level const[IPPROTO_TCP], optname const[TCP_REPAIR], optval ptr[in, flags[tcp_repair_modes, int32]], optlen len[optval])
+setsockopt$inet6_tcp_TCP_REPAIR(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TCP_REPAIR], optval ptr[in, flags[tcp_repair_modes, int32]], optlen len[optval])
+
+tcp_repair_modes = TCP_REPAIR_ON, TCP_REPAIR_OFF, TCP_REPAIR_OFF_NO_WP
+
+setsockopt$inet_tcp_TCP_REPAIR_QUEUE(fd sock_tcp, level const[IPPROTO_TCP], optname const[TCP_REPAIR_QUEUE], optval ptr[in, flags[tcp_repair_queue_modes, int32]], optlen len[optval])
+setsockopt$inet6_tcp_TCP_REPAIR_QUEUE(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TCP_REPAIR_QUEUE], optval ptr[in, flags[tcp_repair_queue_modes, int32]], optlen len[optval])
+
+tcp_repair_queue_modes = TCP_NO_QUEUE, TCP_RECV_QUEUE, TCP_SEND_QUEUE
+
+setsockopt$inet_tcp_TCP_QUEUE_SEQ(fd sock_tcp, level const[IPPROTO_TCP], optname const[TCP_QUEUE_SEQ], optval ptr[in, int32], optlen len[optval])
+setsockopt$inet6_tcp_TCP_QUEUE_SEQ(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TCP_QUEUE_SEQ], optval ptr[in, int32], optlen len[optval])
+
 setsockopt$inet_tcp_TCP_REPAIR_OPTIONS(fd sock_tcp, level const[IPPROTO_TCP], optname const[TCP_REPAIR_OPTIONS], optval ptr[in, array[tcp_repair_opt]], optlen len[optval])
 setsockopt$inet6_tcp_TCP_REPAIR_OPTIONS(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TCP_REPAIR_OPTIONS], optval ptr[in, array[tcp_repair_opt]], optlen len[optval])
 
@@ -83,10 +82,10 @@ setsockopt$inet6_tcp_TCP_REPAIR_WINDOW(fd sock_tcp6, level const[IPPROTO_TCP], o
 setsockopt$inet_tcp_TCP_FASTOPEN_KEY(fd sock_tcp, level const[IPPROTO_TCP], optname const[TCP_FASTOPEN_KEY], optval ptr[in, array[int8, TCP_FASTOPEN_KEY_LENGTH]], optlen len[optval])
 setsockopt$inet6_tcp_TCP_FASTOPEN_KEY(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TCP_FASTOPEN_KEY], optval ptr[in, array[int8, TCP_FASTOPEN_KEY_LENGTH]], optlen len[optval])
 
-setsockopt$inet_tcp_TLS_TX(fd sock_tcp, level const[IPPROTO_TCP], optname const[TLS_TX], optval ptr[in, tls_crypto_info], optlen len[optval])
-setsockopt$inet6_tcp_TLS_TX(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TLS_TX], optval ptr[in, tls_crypto_info], optlen len[optval])
-setsockopt$inet_tcp_TLS_RX(fd sock_tcp, level const[IPPROTO_TCP], optname const[TLS_RX], optval ptr[in, tls_crypto_info], optlen len[optval])
-setsockopt$inet6_tcp_TLS_RX(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TLS_RX], optval ptr[in, tls_crypto_info], optlen len[optval])
+setsockopt$inet_tcp_TLS_TX(fd sock_tcp, level const[IPPROTO_TCP], optname const[TLS_TX], optval ptr[in, tls_crypto_info_u], optlen len[optval])
+setsockopt$inet6_tcp_TLS_TX(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TLS_TX], optval ptr[in, tls_crypto_info_u], optlen len[optval])
+setsockopt$inet_tcp_TLS_RX(fd sock_tcp, level const[IPPROTO_TCP], optname const[TLS_RX], optval ptr[in, tls_crypto_info_u], optlen len[optval])
+setsockopt$inet6_tcp_TLS_RX(fd sock_tcp6, level const[IPPROTO_TCP], optname const[TLS_RX], optval ptr[in, tls_crypto_info_u], optlen len[optval])
 
 tcp_congestion_control_alg_names = "cubic", "reno", "bic", "cdg", "dctcp", "westwood", "highspeed", "hybla", "htcp", "vegas", "nv", "veno", "scalable", "lp", "yeah", "illinois", "dctcp-reno", "bbr"
 
@@ -107,22 +106,75 @@ sockaddr_storage_tcp [
 
 tcp_md5sig {
 	tcpm_addr	sockaddr_storage_tcp
-	__tcpm_pad1	int16
+	__tcpm_pad1	const[0, int16]
 	tcpm_keylen	int16
-	__tcpm_pad2	int32
+	__tcpm_pad2	const[0, int32]
 	tcpm_key	array[int8, TCP_MD5SIG_MAXKEYLEN]
 }
 
-tcp_repair_opt_codes = TCPOPT_MSS, TCPOPT_WINDOW, TCPOPT_SACK_PERM, TCPOPT_TIMESTAMP
+tcp_repair_opt [
+	mss		tcp_repair_opt_mss
+	window		tcp_repair_opt_window
+	sack_perm	tcp_repair_opt_sack_perm
+	timestamp	tcp_repair_opt_timestamp
+]
 
-tcp_repair_opt {
-	opt_code	flags[tcp_repair_opt_codes, int32]
+tcp_repair_opt_mss {
+	opt_code	const[TCPOPT_MSS, int32]
 	opt_val		int32
 }
 
-tls_crypto_info {
-	version		const[TLS_1_2_VERSION, int16]
-	cipher_type	const[TLS_CIPHER_AES_GCM_128, int16]
+tcp_repair_opt_window {
+	opt_code	const[TCPOPT_WINDOW, int32]
+	snd_wscale	int16
+	rcv_wscale	int16
+}
+
+tcp_repair_opt_sack_perm {
+	opt_code	const[TCPOPT_SACK_PERM, int32]
+	opt_val		const[0, int32]
+}
+
+tcp_repair_opt_timestamp {
+	opt_code	const[TCPOPT_TIMESTAMP, int32]
+	opt_val		const[0, int32]
+}
+
+type tls_crypto_info[TYP] {
+	version		flags[tls_crypto_version, int16]
+	cipher_type	const[TYP, int16]
+}
+
+tls_crypto_version = TLS_1_2_VERSION, TLS_1_3_VERSION
+
+tls_crypto_info_u [
+	gcm_128	tls12_crypto_info_aes_gcm_128
+	gcm_256	tls12_crypto_info_aes_gcm_256
+	ccm_128	tls12_crypto_info_aes_ccm_128
+] [varlen]
+
+tls12_crypto_info_aes_gcm_128 {
+	info	tls_crypto_info[TLS_CIPHER_AES_GCM_128]
+	iv	array[int8, TLS_CIPHER_AES_GCM_128_IV_SIZE]
+	key	array[int8, TLS_CIPHER_AES_GCM_128_KEY_SIZE]
+	salt	array[int8, TLS_CIPHER_AES_GCM_128_SALT_SIZE]
+	rec_seq	array[int8, TLS_CIPHER_AES_GCM_128_REC_SEQ_SIZE]
+}
+
+tls12_crypto_info_aes_gcm_256 {
+	info	tls_crypto_info[TLS_CIPHER_AES_GCM_256]
+	iv	array[int8, TLS_CIPHER_AES_GCM_256_IV_SIZE]
+	key	array[int8, TLS_CIPHER_AES_GCM_256_KEY_SIZE]
+	salt	array[int8, TLS_CIPHER_AES_GCM_256_SALT_SIZE]
+	rec_seq	array[int8, TLS_CIPHER_AES_GCM_256_REC_SEQ_SIZE]
+}
+
+tls12_crypto_info_aes_ccm_128 {
+	info	tls_crypto_info[TLS_CIPHER_AES_CCM_128]
+	iv	array[int8, TLS_CIPHER_AES_CCM_128_IV_SIZE]
+	key	array[int8, TLS_CIPHER_AES_CCM_128_KEY_SIZE]
+	salt	array[int8, TLS_CIPHER_AES_CCM_128_SALT_SIZE]
+	rec_seq	array[int8, TLS_CIPHER_AES_CCM_128_REC_SEQ_SIZE]
 }
 
 # TCP ioctls

@@ -73,6 +73,21 @@ func Write(p *prog.Prog, opts Options) ([]byte, error) {
 		replacements["SANDBOX_FUNC"] = replacements["SYSCALLS"]
 		replacements["SYSCALLS"] = "unused"
 	}
+	// Must match timeouts in executor/executor.cc.
+	specialCallTimeouts := map[string]int{
+		"syz_usb_connect":    2000,
+		"syz_usb_control_io": 300,
+		"syz_usb_ep_write":   300,
+		"syz_usb_ep_read":    300,
+		"syz_usb_disconnect": 300,
+	}
+	timeoutExpr := "45"
+	for i, call := range p.Calls {
+		if timeout, ok := specialCallTimeouts[call.Meta.CallName]; ok {
+			timeoutExpr += fmt.Sprintf(" + (call == %d ? %d : 0)", i, timeout)
+		}
+	}
+	replacements["CALL_TIMEOUT"] = timeoutExpr
 	result, err := createCommonHeader(p, mmapProg, replacements, opts)
 	if err != nil {
 		return nil, err
@@ -96,20 +111,20 @@ func (ctx *context) generateSyscalls(calls []string, hasVars bool) string {
 	buf := new(bytes.Buffer)
 	if !opts.Threaded && !opts.Collide {
 		if hasVars || opts.Trace {
-			fmt.Fprintf(buf, "\tlong res = 0;\n")
+			fmt.Fprintf(buf, "\tintptr_t res = 0;\n")
 		}
 		if opts.Repro {
 			fmt.Fprintf(buf, "\tif (write(1, \"executing program\\n\", sizeof(\"executing program\\n\") - 1)) {}\n")
 		}
 		if opts.Trace {
-			fmt.Fprintf(buf, "\tprintf(\"### start\\n\");\n")
+			fmt.Fprintf(buf, "\tfprintf(stderr, \"### start\\n\");\n")
 		}
 		for _, c := range calls {
 			fmt.Fprintf(buf, "%s", c)
 		}
 	} else {
 		if hasVars || opts.Trace {
-			fmt.Fprintf(buf, "\tlong res;")
+			fmt.Fprintf(buf, "\tintptr_t res;")
 		}
 		fmt.Fprintf(buf, "\tswitch (call) {\n")
 		for i, c := range calls {
@@ -174,8 +189,6 @@ func (ctx *context) generateCalls(p prog.ExecProg, trace bool) ([]string, []uint
 		}
 
 		if ctx.opts.Fault && ctx.opts.FaultCall == ci {
-			fmt.Fprintf(w, "\twrite_file(\"/sys/kernel/debug/failslab/ignore-gfp-wait\", \"N\");\n")
-			fmt.Fprintf(w, "\twrite_file(\"/sys/kernel/debug/fail_futex/ignore-private\", \"N\");\n")
 			fmt.Fprintf(w, "\tinject_fault(%v);\n", ctx.opts.FaultNth)
 		}
 		// Call itself.
@@ -209,17 +222,7 @@ func (ctx *context) emitCall(w *bytes.Buffer, call prog.ExecCall, ci int, haveCo
 	if haveCopyout || trace {
 		fmt.Fprintf(w, "res = ")
 	}
-	if native {
-		fmt.Fprintf(w, "syscall(%v%v", ctx.sysTarget.SyscallPrefix, callName)
-	} else if strings.HasPrefix(callName, "syz_") {
-		fmt.Fprintf(w, "%v(", callName)
-	} else {
-		args := strings.Repeat(",long", len(call.Args))
-		if args != "" {
-			args = args[1:]
-		}
-		fmt.Fprintf(w, "((long(*)(%v))CAST(%v))(", args, callName)
-	}
+	ctx.emitCallName(w, call, native)
 	for ai, arg := range call.Args {
 		if native || ai > 0 {
 			fmt.Fprintf(w, ", ")
@@ -229,7 +232,7 @@ func (ctx *context) emitCall(w *bytes.Buffer, call prog.ExecCall, ci int, haveCo
 			if arg.Format != prog.FormatNative && arg.Format != prog.FormatBigEndian {
 				panic("sring format in syscall argument")
 			}
-			fmt.Fprintf(w, "%v", ctx.constArgToStr(arg))
+			fmt.Fprintf(w, "%v", ctx.constArgToStr(arg, true))
 		case prog.ExecArgResult:
 			if arg.Format != prog.FormatNative && arg.Format != prog.FormatBigEndian {
 				panic("sring format in syscall argument")
@@ -238,22 +241,48 @@ func (ctx *context) emitCall(w *bytes.Buffer, call prog.ExecCall, ci int, haveCo
 			if native && ctx.target.PtrSize == 4 {
 				// syscall accepts args as ellipsis, resources are uint64
 				// and take 2 slots without the cast, which would be wrong.
-				val = "(long)" + val
+				val = "(intptr_t)" + val
 			}
 			fmt.Fprintf(w, "%v", val)
 		default:
 			panic(fmt.Sprintf("unknown arg type: %+v", arg))
 		}
 	}
-	fmt.Fprintf(w, ");\n")
+	for i := 0; i < call.Meta.MissingArgs; i++ {
+		if native || len(call.Args) != 0 {
+			fmt.Fprintf(w, ", ")
+		}
+		fmt.Fprintf(w, "0")
+	}
+	fmt.Fprintf(w, ");")
+	comment := ctx.target.AnnotateCall(call)
+	if len(comment) != 0 {
+		fmt.Fprintf(w, " /* %s */", comment)
+	}
+	fmt.Fprintf(w, "\n")
 	if trace {
 		cast := ""
 		if !native && !strings.HasPrefix(callName, "syz_") {
-			// Potentially we casted a function returning int to a function returning long.
-			// So instead of long -1 we can get 0x00000000ffffffff. Sign extend it to long.
-			cast = "(long)(int)"
+			// Potentially we casted a function returning int to a function returning intptr_t.
+			// So instead of intptr_t -1 we can get 0x00000000ffffffff. Sign extend it to intptr_t.
+			cast = "(intptr_t)(int)"
 		}
-		fmt.Fprintf(w, "\tprintf(\"### call=%v errno=%%u\\n\", %vres == -1 ? errno : 0);\n", ci, cast)
+		fmt.Fprintf(w, "\tfprintf(stderr, \"### call=%v errno=%%u\\n\", %vres == -1 ? errno : 0);\n", ci, cast)
+	}
+}
+
+func (ctx *context) emitCallName(w *bytes.Buffer, call prog.ExecCall, native bool) {
+	callName := call.Meta.CallName
+	if native {
+		fmt.Fprintf(w, "syscall(%v%v", ctx.sysTarget.SyscallPrefix, callName)
+	} else if strings.HasPrefix(callName, "syz_") {
+		fmt.Fprintf(w, "%v(", callName)
+	} else {
+		args := strings.Repeat(",intptr_t", len(call.Args))
+		if args != "" {
+			args = args[1:]
+		}
+		fmt.Fprintf(w, "((intptr_t(*)(%v))CAST(%v))(", args, callName)
 	}
 }
 
@@ -282,20 +311,24 @@ func (ctx *context) copyin(w *bytes.Buffer, csumSeq *int, copyin prog.ExecCopyin
 	switch arg := copyin.Arg.(type) {
 	case prog.ExecArgConst:
 		if arg.BitfieldOffset == 0 && arg.BitfieldLength == 0 {
-			ctx.copyinVal(w, copyin.Addr, arg.Size, ctx.constArgToStr(arg), arg.Format)
+			ctx.copyinVal(w, copyin.Addr, arg.Size, ctx.constArgToStr(arg, true), arg.Format)
 		} else {
 			if arg.Format != prog.FormatNative && arg.Format != prog.FormatBigEndian {
 				panic("bitfield+string format")
 			}
-			fmt.Fprintf(w, "\tNONFAILING(STORE_BY_BITMASK(uint%v, 0x%x, %v, %v, %v));\n",
-				arg.Size*8, copyin.Addr, ctx.constArgToStr(arg),
+			htobe := ""
+			if arg.Format == prog.FormatBigEndian {
+				htobe = fmt.Sprintf("htobe%v", arg.Size*8)
+			}
+			fmt.Fprintf(w, "\tNONFAILING(STORE_BY_BITMASK(uint%v, %v, 0x%x, %v, %v, %v));\n",
+				arg.Size*8, htobe, copyin.Addr, ctx.constArgToStr(arg, false),
 				arg.BitfieldOffset, arg.BitfieldLength)
 		}
 	case prog.ExecArgResult:
 		ctx.copyinVal(w, copyin.Addr, arg.Size, ctx.resultArgToStr(arg), arg.Format)
 	case prog.ExecArgData:
 		fmt.Fprintf(w, "\tNONFAILING(memcpy((void*)0x%x, \"%s\", %v));\n",
-			copyin.Addr, toCString(arg.Data), len(arg.Data))
+			copyin.Addr, toCString(arg.Data, arg.Readable), len(arg.Data))
 	case prog.ExecArgCsum:
 		switch arg.Kind {
 		case prog.ExecArgCsumInet:
@@ -336,7 +369,7 @@ func (ctx *context) copyinVal(w *bytes.Buffer, addr, size uint64, val string, bf
 func (ctx *context) copyout(w *bytes.Buffer, call prog.ExecCall, resCopyout bool) {
 	if ctx.sysTarget.OS == "fuchsia" {
 		// On fuchsia we have real system calls that return ZX_OK on success,
-		// and libc calls that are casted to function returning long,
+		// and libc calls that are casted to function returning intptr_t,
 		// as the result int -1 is returned as 0x00000000ffffffff rather than full -1.
 		if strings.HasPrefix(call.Meta.CallName, "zx_") {
 			fmt.Fprintf(w, "\tif (res == ZX_OK)")
@@ -363,7 +396,7 @@ func (ctx *context) copyout(w *bytes.Buffer, call prog.ExecCall, resCopyout bool
 	}
 }
 
-func (ctx *context) constArgToStr(arg prog.ExecArgConst) string {
+func (ctx *context) constArgToStr(arg prog.ExecArgConst, handleBigEndian bool) string {
 	mask := (uint64(1) << (arg.Size * 8)) - 1
 	v := arg.Value & mask
 	val := fmt.Sprintf("%v", v)
@@ -375,7 +408,7 @@ func (ctx *context) constArgToStr(arg prog.ExecArgConst) string {
 	if ctx.opts.Procs > 1 && arg.PidStride != 0 {
 		val += fmt.Sprintf(" + procid*%v", arg.PidStride)
 	}
-	if arg.Format == prog.FormatBigEndian {
+	if handleBigEndian && arg.Format == prog.FormatBigEndian {
 		val = fmt.Sprintf("htobe%v(%v)", arg.Size*8, val)
 	}
 	return val
@@ -401,13 +434,12 @@ func (ctx *context) postProcess(result []byte) []byte {
 		result = regexp.MustCompile(`\t*NONFAILING\((.*)\);\n`).ReplaceAll(result, []byte("$1;\n"))
 	}
 	result = bytes.Replace(result, []byte("NORETURN"), nil, -1)
-	result = bytes.Replace(result, []byte("PRINTF"), nil, -1)
 	result = bytes.Replace(result, []byte("doexit("), []byte("exit("), -1)
+	result = regexp.MustCompile(`PRINTF\(.*?\)`).ReplaceAll(result, nil)
 	result = regexp.MustCompile(`\t*debug\((.*\n)*?.*\);\n`).ReplaceAll(result, nil)
 	result = regexp.MustCompile(`\t*debug_dump_data\((.*\n)*?.*\);\n`).ReplaceAll(result, nil)
 	result = regexp.MustCompile(`\t*exitf\((.*\n)*?.*\);\n`).ReplaceAll(result, []byte("\texit(1);\n"))
 	result = regexp.MustCompile(`\t*fail\((.*\n)*?.*\);\n`).ReplaceAll(result, []byte("\texit(1);\n"))
-	result = regexp.MustCompile(`\t*error\((.*\n)*?.*\);\n`).ReplaceAll(result, []byte("\texit(1);\n"))
 
 	result = ctx.hoistIncludes(result)
 	result = ctx.removeEmptyLines(result)
@@ -426,21 +458,28 @@ func (ctx *context) hoistIncludes(result []byte) []byte {
 		includes[string(match)] = true
 	}
 	result = includeRe.ReplaceAll(result, nil)
-	// Linux headers are broken, so we have to move all linux includes to the bottom.
-	var sorted, sortedLinux []string
+	// Certain linux and bsd headers are broken and go to the bottom.
+	var sorted, sortedBottom, sortedTop []string
 	for include := range includes {
 		if strings.Contains(include, "<linux/") {
-			sortedLinux = append(sortedLinux, include)
+			sortedBottom = append(sortedBottom, include)
+		} else if strings.Contains(include, "<netinet/if_ether.h>") {
+			sortedBottom = append(sortedBottom, include)
+		} else if ctx.target.OS == freebsd && strings.Contains(include, "<sys/types.h>") {
+			sortedTop = append(sortedTop, include)
 		} else {
 			sorted = append(sorted, include)
 		}
 	}
+	sort.Strings(sortedTop)
 	sort.Strings(sorted)
-	sort.Strings(sortedLinux)
+	sort.Strings(sortedBottom)
 	newResult := append([]byte{}, result[:includesStart]...)
+	newResult = append(newResult, strings.Join(sortedTop, "")...)
+	newResult = append(newResult, '\n')
 	newResult = append(newResult, strings.Join(sorted, "")...)
 	newResult = append(newResult, '\n')
-	newResult = append(newResult, strings.Join(sortedLinux, "")...)
+	newResult = append(newResult, strings.Join(sortedBottom, "")...)
 	newResult = append(newResult, result[includesStart:]...)
 	return newResult
 }
@@ -458,59 +497,11 @@ func (ctx *context) removeEmptyLines(result []byte) []byte {
 	}
 }
 
-func toCString(data []byte) []byte {
+func toCString(data []byte, readable bool) []byte {
 	if len(data) == 0 {
-		return nil
-	}
-	readable := true
-	for i, v := range data {
-		// Allow 0 only as last byte.
-		if !isReadable(v) && (i != len(data)-1 || v != 0) {
-			readable = false
-			break
-		}
-	}
-	if !readable {
-		buf := new(bytes.Buffer)
-		for _, v := range data {
-			buf.Write([]byte{'\\', 'x', toHex(v >> 4), toHex(v << 4 >> 4)})
-		}
-		return buf.Bytes()
-	}
-	if data[len(data)-1] == 0 {
-		// Don't serialize last 0, C strings are 0-terminated anyway.
-		data = data[:len(data)-1]
+		panic("empty data arg")
 	}
 	buf := new(bytes.Buffer)
-	for _, v := range data {
-		switch v {
-		case '\t':
-			buf.Write([]byte{'\\', 't'})
-		case '\r':
-			buf.Write([]byte{'\\', 'r'})
-		case '\n':
-			buf.Write([]byte{'\\', 'n'})
-		case '\\':
-			buf.Write([]byte{'\\', '\\'})
-		case '"':
-			buf.Write([]byte{'\\', '"'})
-		default:
-			if v < 0x20 || v >= 0x7f {
-				panic("unexpected char during data serialization")
-			}
-			buf.WriteByte(v)
-		}
-	}
+	prog.EncodeData(buf, data, readable)
 	return buf.Bytes()
-}
-
-func isReadable(v byte) bool {
-	return v >= 0x20 && v < 0x7f || v == '\t' || v == '\r' || v == '\n'
-}
-
-func toHex(v byte) byte {
-	if v < 10 {
-		return '0' + v
-	}
-	return 'a' + v - 10
 }

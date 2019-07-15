@@ -1,58 +1,18 @@
 # Setup: Ubuntu host, QEMU vm, x86-64 kernel
 
-These are the instructions on how to fuzz the x86-64 kernel in a QEMU with Ubuntu 14.04 on the host machine and Debian Wheezy in the QEMU instances.
+These are the instructions on how to fuzz the x86-64 kernel in a QEMU with Ubuntu 14.04 on the host machine and Debian Stretch in the QEMU instances.
 
 ## GCC
 
-Since syzkaller requires coverage support in GCC, we need to use a recent GCC version. To checkout GCC 7.1.0 sources to `$GCC` dir:
+Use the latest compiler from your distro or get the one from [this](/docs/syzbot.md#crash-does-not-reproduce) list and unpack into `$GCC`.
+
+Now you should have GCC binaries in `$GCC/bin/`:
 ``` bash
-svn checkout svn://gcc.gnu.org/svn/gcc/trunk $GCC
-cd $GCC
-svn ls -v ^/tags | grep gcc_7_1_0_release
-svn up -r 247494
-```
-
-Unfortunately there's a typo in the source of `gcc_7_1_0_release`. Apply [this fix](https://patchwork.ozlabs.org/patch/757421/):
-``` c
-diff --git a/gcc/tree.h b/gcc/tree.h
-index 3bca90a..fdaa7af 100644
---- a/gcc/tree.h
-+++ b/gcc/tree.h
-@@ -897,8 +897,8 @@  extern void omp_clause_range_check_failed (const_tree, const char *, int,
- /* If this is true, we should insert a __cilk_detach call just before
-    this function call.  */
- #define EXPR_CILK_SPAWN(NODE) \
--  (tree_check2 (NODE, __FILE__, __LINE__, __FUNCTION__, \
--                CALL_EXPR, AGGR_INIT_EXPR)->base.u.bits.unsigned_flag)
-+  (TREE_CHECK2 (NODE, CALL_EXPR, \
-+                AGGR_INIT_EXPR)->base.u.bits.unsigned_flag)
- 
- /* In a RESULT_DECL, PARM_DECL and VAR_DECL, means that it is
-    passed by invisible reference (and the TREE_TYPE is a pointer to the true
-```
-
-Install GCC prerequisites:
-```
-sudo apt-get install flex bison libc6-dev libc6-dev-i386 linux-libc-dev linux-libc-dev:i386 libgmp3-dev libmpfr-dev libmpc-dev build-essential bc
-```
-
-Build GCC:
-``` bash
-mkdir build
-mkdir install
-cd build/
-../configure --enable-languages=c,c++ --disable-bootstrap --enable-checking=no --with-gnu-as --with-gnu-ld --with-ld=/usr/bin/ld.bfd --disable-multilib --prefix=$GCC/install/
-make -j64
-make install
-```
-
-Now you should have GCC binaries in `$GCC/install/bin/`:
-``` bash
-$ ls $GCC/install/bin/
-c++  gcc-ar      gcov-tool                x86_64-pc-linux-gnu-gcc-7.0.0
-cpp  gcc-nm      x86_64-pc-linux-gnu-c++  x86_64-pc-linux-gnu-gcc-ar
-g++  gcc-ranlib  x86_64-pc-linux-gnu-g++  x86_64-pc-linux-gnu-gcc-nm
-gcc  gcov        x86_64-pc-linux-gnu-gcc  x86_64-pc-linux-gnu-gcc-ranlib
+$ ls $GCC/bin/
+cpp     gcc-ranlib  x86_64-pc-linux-gnu-gcc        x86_64-pc-linux-gnu-gcc-ranlib
+gcc     gcov        x86_64-pc-linux-gnu-gcc-9.0.0
+gcc-ar  gcov-dump   x86_64-pc-linux-gnu-gcc-ar
+gcc-nm  gcov-tool   x86_64-pc-linux-gnu-gcc-nm
 ```
 
 ## Kernel
@@ -78,6 +38,12 @@ CONFIG_KASAN=y
 CONFIG_KASAN_INLINE=y
 ```
 
+You may also need the following for a recent linux image:
+```
+CONFIG_CONFIGFS_FS=y
+CONFIG_SECURITYFS=y
+```
+
 You might also want to enable some other kernel configs as described [here](kernel_configs.md).
 
 Since enabling these options results in more sub options being available, we need to regenerate config. Run this and press enter each time when prompted for some config value to leave it as default:
@@ -87,7 +53,7 @@ make oldconfig
 
 Build the kernel with previously built GCC:
 ```
-make CC="$GCC/install/bin/gcc" -j64
+make CC="$GCC/bin/gcc" -j64
 ```
 
 Now you should have `vmlinux` (kernel binary) and `bzImage` (packed kernel image):
@@ -105,38 +71,42 @@ Install debootstrap:
 sudo apt-get install debootstrap
 ```
 
-Use [this script](https://github.com/google/syzkaller/blob/master/tools/create-image.sh) to create a minimal Debian-stretch Linux image.
-The result should be `$IMAGE/stretch.img` disk image.
+Create a Debian-stretch Linux image:
+```
+cd $IMAGE/
+wget https://raw.githubusercontent.com/google/syzkaller/master/tools/create-image.sh -O create-image.sh
+chmod +x create-image.sh
+./create-image.sh
+```
+
+By default, this script will create a minimal Debian-stretch Linux image. The result should be `$IMAGE/stretch.img` disk image.
+
+If you would like to generate wheezy debian image, instead of stretch, just add one option of the script
+``` bash
+./create-image.sh --distribution wheezy
+```
 
 Sometimes it's useful to have some additional packages and tools available in the VM even though they are not required to run syzkaller.
 The instructions to install some useful tools are below.
-They should obviously be executed before packing the `.img` file.
 
-To install other packages (not required to run syzkaller):
+To install other packages, like `make sysbench git vim tmux usbutils` (not required to run syzkaller):
 ``` bash
-sudo chroot stretch /bin/bash -c "apt-get update; apt-get install -y curl tar time strace gcc make sysbench git vim screen usbutils"
-```
-
-To install Trinity (not required to run syzkaller):
-``` bash
-sudo chroot stretch /bin/bash -c "mkdir -p ~; cd ~/; wget https://github.com/kernelslacker/trinity/archive/v1.5.tar.gz -O trinity-1.5.tar.gz; tar -xf trinity-1.5.tar.gz"
-sudo chroot stretch /bin/bash -c "cd ~/trinity-1.5 ; ./configure.sh ; make -j16 ; make install"
+./create-image.sh --feature full
 ```
 
 To install perf (not required to run syzkaller):
 ``` bash
-cp -r $KERNEL stretch/tmp/
-sudo chroot stretch /bin/bash -c "apt-get update; apt-get install -y flex bison python-dev libelf-dev libunwind7-dev libaudit-dev libslang2-dev libperl-dev binutils-dev liblzma-dev libnuma-dev"
-sudo chroot stretch /bin/bash -c "cd /tmp/linux/tools/perf/; make"
-sudo chroot stretch /bin/bash -c "cp /tmp/linux/tools/perf/perf /usr/bin/"
-rm -r stretch/tmp/linux
+./create-image.sh --add-perf
 ```
+Note: remember to set `$KERNEL` before installing perf
+
+For additional options of `create-image.sh`, please refer to `./create-image.sh -h`
 
 ## QEMU
 
 Install `QEMU`:
 ``` bash
-sudo apt-get install kvm qemu-kvm
+sudo apt-get install qemu-system-x86
 ```
 
 Make sure the kernel boots and `sshd` starts:
@@ -186,30 +156,10 @@ To kill the running QEMU instance:
 kill $(cat vm.pid)
 ```
 
-## Go
-
-Install Go 1.8.1:
-``` bash
-wget https://storage.googleapis.com/golang/go1.8.1.linux-amd64.tar.gz
-tar -xf go1.8.1.linux-amd64.tar.gz
-mv go goroot
-export GOROOT=`pwd`/goroot
-export PATH=$GOROOT/bin:$PATH
-mkdir gopath
-export GOPATH=`pwd`/gopath
-```
-
 ## syzkaller
 
-Get and build syzkaller:
-``` bash
-go get -u -d github.com/google/syzkaller/...
-cd gopath/src/github.com/google/syzkaller/
-mkdir workdir
-make
-```
-
-Create a manager config like the following, replacing the environment
+Build syzkaller as described [here](/docs/contributing.md). Then
+create a manager config like the following, replacing the environment
 variables `$GOPATH`, `$KERNEL` and `$IMAGE` with their actual values.
 ```
 {
@@ -233,6 +183,7 @@ variables `$GOPATH`, `$KERNEL` and `$IMAGE` with their actual values.
 
 Run syzkaller manager:
 ``` bash
+mkdir workdir
 ./bin/syz-manager -config=my.cfg
 ```
 

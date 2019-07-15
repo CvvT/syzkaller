@@ -61,10 +61,16 @@ func (*netbsd) processFile(arch *Arch, info *compiler.ConstInfo) (map[string]uin
 		"-I", filepath.Join(arch.sourceDir, "sys", "arch", "amd64"),
 		"-I", filepath.Join(arch.sourceDir, "common", "include"),
 		"-I", filepath.Join(arch.sourceDir, "sys", "compat", "linux", "common"),
+		"-I", filepath.Join(arch.sourceDir, "include"),
 		"-I", arch.buildDir,
 	}
 	for _, incdir := range info.Incdirs {
 		args = append(args, "-I"+filepath.Join(arch.sourceDir, incdir))
+	}
+	if arch.includeDirs != "" {
+		for _, dir := range strings.Split(arch.includeDirs, ",") {
+			args = append(args, "-I"+dir)
+		}
 	}
 	// Syscall consts on netbsd have weird prefixes sometimes,
 	// try to extract consts with these prefixes as well.

@@ -11,6 +11,7 @@ include <linux/socket.h>
 include <uapi/linux/in.h>
 include <uapi/linux/ethtool.h>
 include <uapi/linux/if_ether.h>
+include <uapi/asm-generic/socket.h>
 
 resource sock[fd]
 type sock_port int16be[20000:20004]
@@ -18,7 +19,7 @@ type sock_port int16be[20000:20004]
 # TODO: describe socketcall syscall
 
 socket(domain flags[socket_domain], type flags[socket_type], proto int8) sock
-socketpair(domain flags[socket_domain], type flags[socket_type], proto int8, fds ptr[out, pipefd])
+socketpair(domain flags[socket_domain], type flags[socket_type], proto int8, fds ptr[out, sock_pair])
 bind(fd sock, addr ptr[in, sockaddr_storage], addrlen len[addr])
 connect(fd sock, addr ptr[in, sockaddr_storage], addrlen len[addr])
 accept(fd sock, peer ptr[out, sockaddr_storage, opt], peerlen ptr[inout, len[peer, int32]]) sock
@@ -30,7 +31,7 @@ getpeername(fd sock, peer ptr[out, sockaddr_storage], peerlen ptr[inout, len[pee
 
 sendmsg(fd sock, msg ptr[in, send_msghdr], f flags[send_flags])
 sendmmsg(fd sock, mmsg ptr[in, array[send_mmsghdr]], vlen len[mmsg], f flags[send_flags])
-recvmsg(fd sock, msg ptr[in, recv_msghdr], f flags[recv_flags])
+recvmsg(fd sock, msg ptr[inout, recv_msghdr], f flags[recv_flags])
 recvmmsg(fd sock, mmsg ptr[in, array[recv_mmsghdr]], vlen len[mmsg], f flags[recv_flags], timeout ptr[in, timespec, opt])
 
 listen(fd sock, backlog int32)
@@ -46,6 +47,11 @@ shutdown_flags = SHUT_RD, SHUT_WR
 send_flags = MSG_CONFIRM, MSG_DONTROUTE, MSG_DONTWAIT, MSG_EOR, MSG_MORE, MSG_NOSIGNAL, MSG_OOB, MSG_PROBE, MSG_BATCH, MSG_FASTOPEN, MSG_ZEROCOPY
 recv_flags = MSG_CMSG_CLOEXEC, MSG_DONTWAIT, MSG_ERRQUEUE, MSG_OOB, MSG_PEEK, MSG_TRUNC, MSG_WAITALL, MSG_WAITFORONE
 cmsg_levels = SOL_SOCKET, IPPROTO_ICMP, SOL_IP, SOL_TCP, SOL_UDP, SOL_IPV6, SOL_ICMPV6, SOL_SCTP, SOL_UDPLITE, SOL_RAW, SOL_IPX, SOL_AX25, SOL_ATALK, SOL_NETROM, SOL_ROSE, SOL_DECNET, SOL_PACKET, SOL_ATM, SOL_AAL, SOL_IRDA, SOL_NETBEUI, SOL_LLC, SOL_DCCP, SOL_NETLINK, SOL_TIPC, SOL_RXRPC, SOL_PPPOL2TP, SOL_BLUETOOTH, SOL_PNPIPE, SOL_RDS, SOL_IUCV, SOL_CAIF, SOL_ALG, SOL_NFC, SOL_KCM
+
+sock_pair {
+	fd0	sock
+	fd1	sock
+}
 
 # This sockaddr type corresponds to the struct sockaddr and is 16 bytes or less.
 # TODO: add AF_APPLETALK, AF_ATMPVC, AF_X25, AF_ROSE, AF_DECnet, AF_ATMSVC, AF_IRDA, AF_IB, AF_TIPC, AF_IUCV, AF_RXRPC, AF_ISDN, AF_PHONET, AF_IEEE802154, AF_CAIF, AF_QIPCRTR
@@ -65,6 +71,8 @@ sockaddr [
 	nfc		sockaddr_nfc
 	vsock		sockaddr_vm
 	xdp		sockaddr_xdp
+	tipc		sockaddr_tipc
+	isdn		sockaddr_mISDN
 	ethernet	sockaddr_ethernet
 	generic		sockaddr_generic
 ] [size[SOCKADDR_SIZE]]
@@ -73,7 +81,8 @@ sockaddr [
 sockaddr_storage [
 	un		sockaddr_un
 	in		sockaddr_in
-	ax25		sockaddr_ax25
+	x25		sockaddr_x25
+	ax25		full_sockaddr_ax25
 	ipx		sockaddr_ipx
 	in6		sockaddr_in6
 	nl		sockaddr_nl
@@ -95,6 +104,10 @@ sockaddr_storage [
 	nfc_llcp	sockaddr_nfc_llcp
 	vsock		sockaddr_vm
 	xdp		sockaddr_xdp
+	tipc		sockaddr_tipc
+	caif		sockaddr_caif
+	isdn		sockaddr_mISDN
+	rxrpc		sockaddr_rxrpc
 	ethernet	sockaddr_ethernet
 	generic		sockaddr_storage_generic
 ] [size[SOCKADDR_STORAGE_SIZE]]
@@ -119,12 +132,27 @@ send_msghdr {
 	msg_iovlen	len[msg_iov, intptr]
 	msg_control	ptr[in, array[cmsghdr], opt]
 	msg_controllen	bytesize[msg_control, intptr]
-	msg_flags	flags[send_flags, int32]
+	msg_flags	const[0, int32]
+}
+
+msghdr_sock {
+	msg_name	ptr[in, sockaddr_storage, opt]
+	msg_namelen	len[msg_name, int32]
+	msg_iov		ptr[in, array[iovec_in]]
+	msg_iovlen	len[msg_iov, intptr]
+	msg_control	ptr[in, array[cmsghdr_sock], opt]
+	msg_controllen	bytesize[msg_control, intptr]
+	msg_flags	const[0, int32]
 }
 
 send_mmsghdr {
 	msg_hdr	send_msghdr
-	msg_len	int32
+	msg_len	const[0, int32]
+}
+
+mmsghdr_sock {
+	msg_hdr	msghdr_sock
+	msg_len	const[0, int32]
 }
 
 recv_msghdr {
@@ -134,7 +162,7 @@ recv_msghdr {
 	msg_iovlen	len[msg_iov, intptr]
 	msg_control	ptr[out, array[int8], opt]
 	msg_controllen	bytesize[msg_control, intptr]
-	msg_flags	int32
+	msg_flags	const[0, int32]
 }
 
 recv_mmsghdr {
@@ -148,6 +176,24 @@ cmsghdr {
 	cmsg_type	int32
 	data		array[int8]
 } [align_ptr]
+
+type cmsghdr_t[SOL, TYP, DATA] {
+	unaligned	cmsghdr_unaligned[SOL, TYP, DATA]
+} [align_ptr]
+
+type cmsghdr_unaligned[SOL, TYP, DATA] {
+	cmsg_len	len[parent, intptr]
+	cmsg_level	const[SOL, int32]
+	cmsg_type	const[TYP, int32]
+	data		DATA
+} [packed]
+
+# For __sock_cmsg_send
+cmsghdr_sock [
+	mark		cmsghdr_t[SOL_SOCKET, SO_MARK, int32]
+	timestamping	cmsghdr_t[SOL_SOCKET, SO_TIMESTAMPING_OLD, int32]
+	txtime		cmsghdr_t[SOL_SOCKET, SCM_TXTIME, int64]
+] [varlen]
 
 # Socket options
 
@@ -163,8 +209,8 @@ setsockopt$sock_cred(fd sock, level const[SOL_SOCKET], optname const[SO_PEERCRED
 getsockopt$sock_timeval(fd sock, level const[SOL_SOCKET], optname flags[sockopt_opt_sock_timeval], optval ptr[out, timeval], optlen ptr[inout, len[optval, int32]])
 setsockopt$sock_timeval(fd sock, level const[SOL_SOCKET], optname flags[sockopt_opt_sock_timeval], optval ptr[in, timeval], optlen len[optval])
 setsockopt$sock_attach_bpf(fd sock, level const[SOL_SOCKET], optname const[SO_ATTACH_BPF], optval ptr[in, fd_bpf_prog], optlen len[optval])
-setsockopt$SO_TIMESTAMPING(fd sock, level const[SOL_SOCKET], optname const[SO_TIMESTAMPING], optval ptr[in, flags[sockopt_so_timestamping, int32]], optlen len[optval])
-getsockopt$SO_TIMESTAMPING(fd sock, level const[SOL_SOCKET], optname const[SO_TIMESTAMPING], optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
+setsockopt$SO_TIMESTAMPING(fd sock, level const[SOL_SOCKET], optname const[SO_TIMESTAMPING_OLD], optval ptr[in, flags[sockopt_so_timestamping, int32]], optlen len[optval])
+getsockopt$SO_TIMESTAMPING(fd sock, level const[SOL_SOCKET], optname const[SO_TIMESTAMPING_OLD], optval ptr[out, int32], optlen ptr[inout, len[optval, int32]])
 setsockopt$SO_ATTACH_FILTER(fd sock, level const[SOL_SOCKET], optname const[SO_ATTACH_FILTER], optval ptr[in, sock_fprog], optlen len[optval])
 setsockopt$SO_BINDTODEVICE(fd sock, level const[SOL_SOCKET], optname const[SO_BINDTODEVICE], optval ptr[in, devname], optlen len[optval])
 getsockopt$SO_BINDTODEVICE(fd sock, level const[SOL_SOCKET], optname const[SO_BINDTODEVICE], optval ptr[out, devname], optlen len[optval])
@@ -177,9 +223,9 @@ linger {
 }
 
 sockopt_opt_sock_void = SO_DETACH_FILTER, SO_MARK
-sockopt_opt_sock_int = SO_ACCEPTCONN, SO_BROADCAST, SO_DEBUG, SO_DOMAIN, SO_ERROR, SO_DONTROUTE, SO_KEEPALIVE, SO_PEEK_OFF, SO_PRIORITY, SO_PROTOCOL, SO_RCVBUF, SO_RCVBUFFORCE, SO_RCVLOWAT, SO_SNDLOWAT, SO_REUSEADDR, SO_SNDBUF, SO_SNDBUFFORCE, SO_TIMESTAMP, SO_TYPE, SO_REUSEPORT, SO_OOBINLINE, SO_NO_CHECK, SO_PASSCRED, SO_TIMESTAMPNS, SO_LOCK_FILTER, SO_PASSSEC, SO_RXQ_OVFL, SO_WIFI_STATUS, SO_NOFCS, SO_SELECT_ERR_QUEUE, SO_BUSY_POLL, SO_MAX_PACING_RATE, SO_ZEROCOPY
-sockopt_opt_sock_timeval = SO_RCVTIMEO, SO_SNDTIMEO
-sockopt_opt_sock_buf = SO_PEERNAME, SO_PEERSEC, SO_GET_FILTER, SO_MEMINFO, SO_PEERGROUPS
+sockopt_opt_sock_int = SO_ACCEPTCONN, SO_BROADCAST, SO_DEBUG, SO_DOMAIN, SO_ERROR, SO_DONTROUTE, SO_KEEPALIVE, SO_PEEK_OFF, SO_PRIORITY, SO_PROTOCOL, SO_RCVBUF, SO_RCVBUFFORCE, SO_RCVLOWAT, SO_SNDLOWAT, SO_REUSEADDR, SO_SNDBUF, SO_SNDBUFFORCE, SO_TIMESTAMP_OLD, SO_TYPE, SO_REUSEPORT, SO_OOBINLINE, SO_NO_CHECK, SO_PASSCRED, SO_TIMESTAMPNS_OLD, SO_LOCK_FILTER, SO_PASSSEC, SO_RXQ_OVFL, SO_WIFI_STATUS, SO_NOFCS, SO_SELECT_ERR_QUEUE, SO_BUSY_POLL, SO_MAX_PACING_RATE, SO_ZEROCOPY
+sockopt_opt_sock_timeval = SO_RCVTIMEO_OLD, SO_SNDTIMEO_OLD
+sockopt_opt_sock_buf = SO_PEERNAME, SO_PEERSEC, SO_GET_FILTER, SO_MEMINFO, SO_PEERGROUPS, SO_TXTIME
 sockopt_so_timestamping = SOF_TIMESTAMPING_TX_HARDWARE, SOF_TIMESTAMPING_TX_SOFTWARE, SOF_TIMESTAMPING_RX_HARDWARE, SOF_TIMESTAMPING_RX_SOFTWARE, SOF_TIMESTAMPING_SOFTWARE, SOF_TIMESTAMPING_SYS_HARDWARE, SOF_TIMESTAMPING_RAW_HARDWARE, SOF_TIMESTAMPING_OPT_ID, SOF_TIMESTAMPING_TX_SCHED, SOF_TIMESTAMPING_TX_ACK, SOF_TIMESTAMPING_OPT_CMSG, SOF_TIMESTAMPING_OPT_TSONLY
 
 # Socket ioctls
@@ -190,14 +236,14 @@ sockopt_so_timestamping = SOF_TIMESTAMPING_TX_HARDWARE, SOF_TIMESTAMPING_TX_SOFT
 
 # http://lxr.free-electrons.com/source/include/uapi/asm-generic/sockios.h
 
-# TODO: add SIOCADDRT, SIOCDELRT, SIOCRTMSG, SIOCDRARP, SIOCGRARP, SIOCSRARP, SIOCGIFVLAN, SIOCSIFVLAN, SIOCGSTAMP, SIOCGSTAMPNS
+# TODO: add SIOCADDRT, SIOCDELRT, SIOCRTMSG, SIOCDRARP, SIOCGRARP, SIOCSRARP, SIOCGIFVLAN, SIOCSIFVLAN
 
 ioctl$sock_SIOCETHTOOL(fd sock, cmd const[SIOCETHTOOL], arg ptr[inout, ifreq_t[ptr[inout, ethtool_cmd_u]]])
 
 ioctl$sock_SIOCOUTQ(fd sock, cmd const[SIOCOUTQ], arg ptr[out, int32])
 ioctl$sock_SIOCINQ(fd sock, cmd const[SIOCINQ], arg ptr[out, int32])
 
-ioctl$sock_SIOCGIFCONF(fd sock, cmd const[SIOCGIFNAME], arg ptr[inout, ifconf])
+ioctl$sock_SIOCGIFCONF(fd sock, cmd const[SIOCGIFCONF], arg ptr[inout, ifconf])
 
 ifreq_ioctls = SIOCGIFNAME, SIOCSIFLINK, SIOCGIFFLAGS, SIOCSIFFLAGS, SIOCGIFADDR, SIOCSIFADDR, SIOCGIFDSTADDR, SIOCSIFDSTADDR, SIOCGIFBRDADDR, SIOCSIFBRDADDR, SIOCGIFNETMASK, SIOCSIFNETMASK, SIOCGIFMETRIC, SIOCSIFMETRIC, SIOCGIFMEM, SIOCSIFMEM, SIOCGIFMTU, SIOCSIFMTU, SIOCSIFNAME, SIOCSIFHWADDR, SIOCGIFENCAP, SIOCSIFENCAP, SIOCGIFHWADDR, SIOCGIFSLAVE, SIOCSIFSLAVE, SIOCADDMULTI, SIOCDELMULTI, SIOCGIFINDEX, SIOCSIFPFLAGS, SIOCGIFPFLAGS, SIOCDIFADDR, SIOCSIFHWBROADCAST, SIOCGIFCOUNT, SIOCGIFTXQLEN, SIOCSIFTXQLEN, SIOCETHTOOL, SIOCGMIIPHY, SIOCGMIIREG, SIOCSMIIREG, SIOCWANDEV, SIOCGIFMAP, SIOCSIFMAP, SIOCBONDENSLAVE, SIOCBONDRELEASE, SIOCBONDSETHWADDR, SIOCBONDSLAVEINFOQUERY, SIOCBONDINFOQUERY, SIOCBONDCHANGEACTIVE, SIOCBRADDIF, SIOCBRDELIF, SIOCSHWTSTAMP, SIOCGHWTSTAMP
 
@@ -233,6 +279,15 @@ ioctl$sock_SIOCSPGRP(fd sock, cmd const[SIOCSPGRP], arg ptr[in, pid])
 ioctl$sock_FIOGETOWN(fd sock, cmd const[FIOGETOWN], arg ptr[out, pid])
 ioctl$sock_SIOCGPGRP(fd sock, cmd const[SIOCGPGRP], arg ptr[out, pid])
 
+ioctl$sock_TIOCOUTQ(fd sock, cmd const[TIOCOUTQ], arg ptr[out, int32])
+ioctl$sock_TIOCINQ(fd sock, cmd const[TIOCINQ], arg ptr[out, int32])
+ioctl$SIOCGSTAMP(fd sock, cmd const[SIOCGSTAMP], arg ptr[out, timeval])
+ioctl$SIOCGSTAMPNS(fd sock, cmd const[SIOCGSTAMPNS], arg ptr[out, timespec])
+
+# Socket sendmsg
+sendmsg$sock(fd sock, msg ptr[in, msghdr_sock], f flags[send_flags])
+sendmmsg$sock(fd sock, mmsg ptr[in, array[mmsghdr_sock]], vlen len[mmsg], f flags[send_flags])
+
 resource ifindex[int32]
 
 type ifreq_dev_t[DEVNAME, ELEM] {
@@ -262,7 +317,9 @@ define IFREQ_SIZE	sizeof(struct ifreq)
 # between fuzzer and manager and produce lots of "no output" crashes
 # (actually, this is not true now since all testing is done in a separate
 # network namespace, but we still don't mess with eth0).
-devnames = "", "lo", "tunl0", "gre0", "gretap0", "ip_vti0", "ip6_vti0", "sit0", "ip6tnl0", "ip6gre0", "ip6gretap0", "bond0", "dummy0", "eql", "ifb0", "ipddp0", "yam0", "bcsf0", "bcsh0", "teql0", "nr0", "rose0", "irlan0", "erspan0", "bpq0", "vlan0", "bridge0", "vcan0", "team0", "syz_tun", "veth0", "veth1", "veth0_to_bridge", "veth1_to_bridge", "veth0_to_bond", "veth1_to_bond", "veth0_to_team", "veth1_to_team", "bridge_slave_0", "bridge_slave_1", "bond_slave_0", "bond_slave_1", "team_slave_0", "team_slave_1", "syzkaller0", "syzkaller1"
+# Note: lapb0, bpq0 and hwsim0 are only present in init namespace.
+# Note: for roseN, nrN and netdevsimN we should use proc type, but for simplicity we currently use N=0.
+devnames = "", "lo", "tunl0", "gre0", "gretap0", "ip_vti0", "ip6_vti0", "sit0", "ip6tnl0", "ip6gre0", "ip6gretap0", "bond0", "dummy0", "eql", "ifb0", "ipddp0", "yam0", "bcsf0", "bcsh0", "teql0", "nr0", "rose0", "irlan0", "erspan0", "bpq0", "vlan0", "bridge0", "vcan0", "team0", "syz_tun", "veth0", "veth1", "veth0_to_bridge", "veth1_to_bridge", "veth0_to_bond", "veth1_to_bond", "veth0_to_team", "veth1_to_team", "bridge_slave_0", "bridge_slave_1", "bond_slave_0", "bond_slave_1", "team_slave_0", "team_slave_1", "syzkaller0", "syzkaller1", "lapb0", "hwsim0", "rose0", "nr0", "veth0_to_hsr", "veth1_to_hsr", "hsr0", "ip6erspan0", "nlmon0", "vxcan1", "caif0", "batadv0", "netdevsim0"
 
 type devname string[devnames, IFNAMSIZ]
 
@@ -342,8 +399,8 @@ te1_settings {
 }
 
 ifconf [
-	buf	ifconf_buf
 	req	ifconf_req
+	buf	ifconf_buf
 ]
 
 ifconf_buf {
@@ -373,7 +430,7 @@ brctl_arg_get {
 brctl_arg_add_del {
 	cmd	const[BRCTL_ADD_BRIDGE, int64]
 	devname	ptr[in, devname]
-	pad	int64
+	pad	const[0, int64]
 }
 
 brctl_arg_generic {
@@ -645,7 +702,7 @@ ethtool_flow_union [
 ]
 
 ethtool_flow_ext {
-	padding		array[int8, 2]
+	padding		const[0, int16]
 	h_dest		mac_addr
 	vlan_etype	int16be
 	vlan_tci	int16be

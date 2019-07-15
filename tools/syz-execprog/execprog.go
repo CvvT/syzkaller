@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/syzkaller/pkg/cover"
+	"github.com/google/syzkaller/pkg/csource"
 	"github.com/google/syzkaller/pkg/host"
 	"github.com/google/syzkaller/pkg/ipc"
 	"github.com/google/syzkaller/pkg/ipc/ipcconfig"
@@ -32,43 +33,65 @@ var (
 	flagRepeat    = flag.Int("repeat", 1, "repeat execution that many times (0 for infinite loop)")
 	flagProcs     = flag.Int("procs", 1, "number of parallel processes to execute programs")
 	flagOutput    = flag.Bool("output", false, "write programs and results to stdout")
+	flagHints     = flag.Bool("hints", false, "do a hints-generation run")
 	flagFaultCall = flag.Int("fault_call", -1, "inject fault into this call (0-based)")
 	flagFaultNth  = flag.Int("fault_nth", 0, "inject fault on n-th operation (0-based)")
-	flagHints     = flag.Bool("hints", false, "do a hints-generation run")
+	flagEnable    = flag.String("enable", "none", "enable only listed additional features")
+	flagDisable   = flag.String("disable", "none", "enable all additional features except listed")
 )
 
 func main() {
-	flag.Parse()
-	if len(flag.Args()) == 0 {
+	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "usage: execprog [flags] file-with-programs+\n")
 		flag.PrintDefaults()
+		csource.PrintAvailableFeaturesFlags()
+	}
+	flag.Parse()
+	if len(flag.Args()) == 0 {
+		flag.Usage()
 		os.Exit(1)
+	}
+	featuresFlags, err := csource.ParseFeaturesFlags(*flagEnable, *flagDisable, true)
+	if err != nil {
+		log.Fatalf("%v", err)
 	}
 
 	target, err := prog.GetTarget(*flagOS, *flagArch)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-
 	entries := loadPrograms(target, flag.Args())
 	if len(entries) == 0 {
 		return
 	}
-
 	features, err := host.Check(target)
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	if _, err = host.Setup(target, features); err != nil {
-		log.Fatalf("%v", err)
+	if *flagOutput {
+		for _, feat := range features {
+			log.Logf(0, "%-24v: %v", feat.Name, feat.Reason)
+		}
 	}
-	config, execOpts := createConfig(target, entries, features)
-
+	config, execOpts := createConfig(target, entries, features, featuresFlags)
+	if err = host.Setup(target, features, featuresFlags, config.Executor); err != nil {
+		log.Fatal(err)
+	}
+	var gateCallback func()
+	if features[host.FeatureLeakChecking].Enabled {
+		gateCallback = func() {
+			output, err := osutil.RunCmd(10*time.Minute, "", config.Executor, "leak")
+			if err != nil {
+				os.Stdout.Write(output)
+				os.Exit(1)
+			}
+		}
+	}
 	ctx := &Context{
 		entries:  entries,
 		config:   config,
 		execOpts: execOpts,
-		gate:     ipc.NewGate(2**flagProcs, nil),
+		gate:     ipc.NewGate(2**flagProcs, gateCallback),
 		shutdown: make(chan struct{}),
 		repeat:   *flagRepeat,
 	}
@@ -135,24 +158,20 @@ func (ctx *Context) execute(pid int, env *ipc.Env, entry *prog.LogEntry) {
 	if *flagOutput {
 		ctx.logProgram(pid, entry.P, callOpts)
 	}
-	output, info, failed, hanged, err := env.Exec(callOpts, entry.P)
-	if failed {
-		log.Logf(0, "BUG: executor-detected bug:\n%s", output)
-	}
+	output, info, hanged, err := env.Exec(callOpts, entry.P)
 	if ctx.config.Flags&ipc.FlagDebug != 0 || err != nil {
-		log.Logf(0, "result: failed=%v hanged=%v err=%v\n\n%s",
-			failed, hanged, err, output)
+		log.Logf(0, "result: hanged=%v err=%v\n\n%s", hanged, err, output)
 	}
-	if len(info) != 0 {
+	if info != nil {
 		ctx.printCallResults(info)
 		if *flagHints {
 			ctx.printHints(entry.P, info)
 		}
+		if *flagCoverFile != "" {
+			ctx.dumpCoverage(*flagCoverFile, info)
+		}
 	} else {
 		log.Logf(1, "RESULT: no calls executed")
-	}
-	if *flagCoverFile != "" {
-		ctx.dumpCoverage(*flagCoverFile, info)
 	}
 }
 
@@ -168,8 +187,8 @@ func (ctx *Context) logProgram(pid int, p *prog.Prog, callOpts *ipc.ExecOpts) {
 	ctx.logMu.Unlock()
 }
 
-func (ctx *Context) printCallResults(info []ipc.CallInfo) {
-	for i, inf := range info {
+func (ctx *Context) printCallResults(info *ipc.ProgInfo) {
+	for i, inf := range info.Calls {
 		if inf.Flags&ipc.CallExecuted == 0 {
 			continue
 		}
@@ -188,13 +207,13 @@ func (ctx *Context) printCallResults(info []ipc.CallInfo) {
 	}
 }
 
-func (ctx *Context) printHints(p *prog.Prog, info []ipc.CallInfo) {
+func (ctx *Context) printHints(p *prog.Prog, info *ipc.ProgInfo) {
 	ncomps, ncandidates := 0, 0
 	for i := range p.Calls {
 		if *flagOutput {
 			fmt.Printf("call %v:\n", i)
 		}
-		comps := info[i].Comps
+		comps := info.Calls[i].Comps
 		for v, args := range comps {
 			ncomps += len(args)
 			if *flagOutput {
@@ -215,21 +234,27 @@ func (ctx *Context) printHints(p *prog.Prog, info []ipc.CallInfo) {
 	log.Logf(0, "ncomps=%v ncandidates=%v", ncomps, ncandidates)
 }
 
-func (ctx *Context) dumpCoverage(coverFile string, info []ipc.CallInfo) {
-	for i, inf := range info {
-		log.Logf(0, "call #%v: signal %v, coverage %v", i, len(inf.Signal), len(inf.Cover))
-		if len(inf.Cover) == 0 {
-			continue
-		}
-		buf := new(bytes.Buffer)
-		for _, pc := range inf.Cover {
-			fmt.Fprintf(buf, "0x%x\n", cover.RestorePC(pc, 0xffffffff))
-		}
-		err := osutil.WriteFile(fmt.Sprintf("%v.%v", coverFile, i), buf.Bytes())
-		if err != nil {
-			log.Fatalf("failed to write coverage file: %v", err)
-		}
+func (ctx *Context) dumpCallCoverage(coverFile string, info *ipc.CallInfo) {
+	if len(info.Cover) == 0 {
+		return
 	}
+	buf := new(bytes.Buffer)
+	for _, pc := range info.Cover {
+		fmt.Fprintf(buf, "0x%x\n", cover.RestorePC(pc, 0xffffffff))
+	}
+	err := osutil.WriteFile(coverFile, buf.Bytes())
+	if err != nil {
+		log.Fatalf("failed to write coverage file: %v", err)
+	}
+}
+
+func (ctx *Context) dumpCoverage(coverFile string, info *ipc.ProgInfo) {
+	for i, inf := range info.Calls {
+		log.Logf(0, "call #%v: signal %v, coverage %v", i, len(inf.Signal), len(inf.Cover))
+		ctx.dumpCallCoverage(fmt.Sprintf("%v.%v", coverFile, i), &inf)
+	}
+	log.Logf(0, "extra: signal %v, coverage %v", len(info.Extra.Signal), len(info.Extra.Cover))
+	ctx.dumpCallCoverage(fmt.Sprintf("%v.extra", coverFile), &info.Extra)
 }
 
 func (ctx *Context) getProgramIndex() int {
@@ -257,7 +282,8 @@ func loadPrograms(target *prog.Target, files []string) []*prog.LogEntry {
 	return entries
 }
 
-func createConfig(target *prog.Target, entries []*prog.LogEntry, features *host.Features) (
+func createConfig(target *prog.Target, entries []*prog.LogEntry,
+	features *host.Features, featuresFlags csource.Features) (
 	*ipc.Config, *ipc.ExecOpts) {
 	config, execOpts, err := ipcconfig.Default(target)
 	if err != nil {
@@ -277,23 +303,28 @@ func createConfig(target *prog.Target, entries []*prog.LogEntry, features *host.
 		}
 		execOpts.Flags |= ipc.FlagCollectComps
 	}
+	if features[host.FeatureExtraCoverage].Enabled {
+		config.Flags |= ipc.FlagExtraCover
+	}
 	if *flagFaultCall >= 0 {
-		config.Flags |= ipc.FlagEnableFault
 		execOpts.Flags |= ipc.FlagInjectFault
 		execOpts.FaultCall = *flagFaultCall
 		execOpts.FaultNth = *flagFaultNth
 	}
-	handled := make(map[string]bool)
-	for _, entry := range entries {
-		for _, call := range entry.P.Calls {
-			handled[call.Meta.CallName] = true
-		}
-	}
-	if features[host.FeatureNetworkInjection].Enabled {
+	if featuresFlags["tun"].Enabled && features[host.FeatureNetworkInjection].Enabled {
 		config.Flags |= ipc.FlagEnableTun
 	}
-	if features[host.FeatureNetworkDevices].Enabled {
+	if featuresFlags["net_dev"].Enabled && features[host.FeatureNetworkDevices].Enabled {
 		config.Flags |= ipc.FlagEnableNetDev
+	}
+	if featuresFlags["net_reset"].Enabled {
+		config.Flags |= ipc.FlagEnableNetReset
+	}
+	if featuresFlags["cgroups"].Enabled {
+		config.Flags |= ipc.FlagEnableCgroups
+	}
+	if featuresFlags["close_fds"].Enabled {
+		config.Flags |= ipc.FlagEnableCloseFds
 	}
 	return config, execOpts
 }

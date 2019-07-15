@@ -37,7 +37,10 @@ func initTest(t *testing.T) (*prog.Target, rand.Source, int, EnvFlags) {
 	if testing.Short() {
 		iters = 10
 	}
-	seed := int64(time.Now().UnixNano())
+	seed := time.Now().UnixNano()
+	if os.Getenv("TRAVIS") != "" {
+		seed = 0 // required for deterministic coverage reports
+	}
 	rs := rand.NewSource(seed)
 	t.Logf("seed=%v", seed)
 	target, err := prog.GetTarget(runtime.GOOS, runtime.GOARCH)
@@ -93,21 +96,18 @@ func TestExecute(t *testing.T) {
 			opts := &ExecOpts{
 				Flags: flag,
 			}
-			output, info, failed, hanged, err := env.Exec(opts, p)
+			output, info, hanged, err := env.Exec(opts, p)
 			if err != nil {
 				t.Fatalf("failed to run executor: %v", err)
 			}
 			if hanged {
 				t.Fatalf("program hanged:\n%s", output)
 			}
-			if failed {
-				t.Fatalf("program failed:\n%s", output)
-			}
-			if len(info) == 0 {
+			if len(info.Calls) == 0 {
 				t.Fatalf("no calls executed:\n%s", output)
 			}
-			if info[0].Errno != 0 {
-				t.Fatalf("simple call failed: %v\n%s", info[0].Errno, output)
+			if info.Calls[0].Errno != 0 {
+				t.Fatalf("simple call failed: %v\n%s", info.Calls[0].Errno, output)
 			}
 			if len(output) != 0 {
 				t.Fatalf("output on empty program")
@@ -127,8 +127,9 @@ func TestParallel(t *testing.T) {
 	const P = 10
 	errs := make(chan error, P)
 	for p := 0; p < P; p++ {
+		p := p
 		go func() {
-			env, err := MakeEnv(cfg, 0)
+			env, err := MakeEnv(cfg, p)
 			if err != nil {
 				errs <- fmt.Errorf("failed to create env: %v", err)
 				return
@@ -139,7 +140,7 @@ func TestParallel(t *testing.T) {
 			}()
 			p := target.GenerateSimpleProg()
 			opts := &ExecOpts{}
-			output, info, failed, hanged, err := env.Exec(opts, p)
+			output, info, hanged, err := env.Exec(opts, p)
 			if err != nil {
 				err = fmt.Errorf("failed to run executor: %v", err)
 				return
@@ -148,16 +149,12 @@ func TestParallel(t *testing.T) {
 				err = fmt.Errorf("program hanged:\n%s", output)
 				return
 			}
-			if failed {
-				err = fmt.Errorf("program failed:\n%s", output)
-				return
-			}
-			if len(info) == 0 {
+			if len(info.Calls) == 0 {
 				err = fmt.Errorf("no calls executed:\n%s", output)
 				return
 			}
-			if info[0].Errno != 0 {
-				err = fmt.Errorf("simple call failed: %v\n%s", info[0].Errno, output)
+			if info.Calls[0].Errno != 0 {
+				err = fmt.Errorf("simple call failed: %v\n%s", info.Calls[0].Errno, output)
 				return
 			}
 			if len(output) != 0 {

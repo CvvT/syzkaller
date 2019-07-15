@@ -8,12 +8,102 @@ import (
 	"strings"
 )
 
-func (target *Target) generateSize(arg Arg, lenType *LenType) uint64 {
-	if arg == nil {
-		// Arg is an optional pointer, set size to 0.
-		return 0
-	}
+const (
+	// Special reference to the outer struct used in len targets.
+	ParentRef = "parent"
+	// Special reference directly to syscall arguments used in len targets.
+	SyscallRef = "syscall"
+)
 
+func (target *Target) assignSizes(args []Arg, parentsMap map[Arg]Arg, syscallArgs []Arg, autos map[Arg]bool) {
+	for _, arg := range args {
+		if arg = InnerArg(arg); arg == nil {
+			continue // Pointer to optional len field, no need to fill in value.
+		}
+		typ, ok := arg.Type().(*LenType)
+		if !ok {
+			continue
+		}
+		if autos != nil {
+			if !autos[arg] {
+				continue
+			}
+			delete(autos, arg)
+		}
+		a := arg.(*ConstArg)
+		if typ.Path[0] == SyscallRef {
+			target.assignSize(a, nil, typ.Path[1:], syscallArgs, parentsMap)
+		} else {
+			target.assignSize(a, a, typ.Path, args, parentsMap)
+		}
+	}
+}
+
+func (target *Target) assignSize(dst *ConstArg, pos Arg, path []string, args []Arg, parentsMap map[Arg]Arg) {
+	elem := path[0]
+	path = path[1:]
+	var offset uint64
+	for _, buf := range args {
+		if elem != buf.Type().FieldName() {
+			if !buf.Type().BitfieldMiddle() {
+				offset += buf.Size()
+			}
+			continue
+		}
+		buf = InnerArg(buf)
+		if buf == nil {
+			dst.Val = 0 // target is an optional pointer
+			return
+		}
+		if len(path) == 0 {
+			dst.Val = target.computeSize(buf, offset, dst.Type().(*LenType))
+		} else {
+			target.assignSize(dst, buf, path, buf.(*GroupArg).Inner, parentsMap)
+		}
+		return
+	}
+	if elem == ParentRef {
+		buf := parentsMap[pos]
+		if len(path) == 0 {
+			dst.Val = target.computeSize(buf, noOffset, dst.Type().(*LenType))
+		} else {
+			target.assignSize(dst, buf, path, buf.(*GroupArg).Inner, parentsMap)
+		}
+		return
+	}
+	for buf := parentsMap[pos]; buf != nil; buf = parentsMap[buf] {
+		parentName := buf.Type().Name()
+		if pos := strings.IndexByte(parentName, '['); pos != -1 {
+			// For template parents, strip arguments.
+			parentName = parentName[:pos]
+		}
+		if elem != parentName {
+			continue
+		}
+		if len(path) == 0 {
+			dst.Val = target.computeSize(buf, noOffset, dst.Type().(*LenType))
+		} else {
+			target.assignSize(dst, buf, path, buf.(*GroupArg).Inner, parentsMap)
+		}
+		return
+	}
+	var argNames []string
+	for _, arg := range args {
+		argNames = append(argNames, arg.Type().FieldName())
+	}
+	panic(fmt.Sprintf("len field %q references non existent field %q, pos=%q/%q, argsMap: %+v",
+		dst.Type().FieldName(), elem, pos.Type().Name(), pos.Type().FieldName(), argNames))
+}
+
+const noOffset = ^uint64(0)
+
+func (target *Target) computeSize(arg Arg, offset uint64, lenType *LenType) uint64 {
+	if lenType.Offset {
+		if offset == noOffset {
+			panic("offset of a non-field")
+		}
+		return offset * 8 / lenType.BitSize
+	}
 	bitSize := lenType.BitSize
 	if bitSize == 0 {
 		bitSize = 8
@@ -33,65 +123,7 @@ func (target *Target) generateSize(arg Arg, lenType *LenType) uint64 {
 	}
 }
 
-func (target *Target) assignSizes(args []Arg, parentsMap map[Arg]Arg) {
-	// Create a map from field names to args.
-	argsMap := make(map[string]Arg)
-	for _, arg := range args {
-		if IsPad(arg.Type()) {
-			continue
-		}
-		argsMap[arg.Type().FieldName()] = arg
-	}
-
-	// Fill in size arguments.
-	for _, arg := range args {
-		if arg = InnerArg(arg); arg == nil {
-			continue // Pointer to optional len field, no need to fill in value.
-		}
-		if typ, ok := arg.Type().(*LenType); ok {
-			a := arg.(*ConstArg)
-
-			buf, ok := argsMap[typ.Buf]
-			if ok {
-				a.Val = target.generateSize(InnerArg(buf), typ)
-				continue
-			}
-
-			if typ.Buf == "parent" {
-				a.Val = parentsMap[arg].Size()
-				if typ.BitSize != 0 {
-					a.Val = a.Val * 8 / typ.BitSize
-				}
-				continue
-			}
-
-			sizeAssigned := false
-			for parent := parentsMap[arg]; parent != nil; parent = parentsMap[parent] {
-				parentName := parent.Type().Name()
-				if pos := strings.IndexByte(parentName, '['); pos != -1 {
-					// For template parents, strip arguments.
-					parentName = parentName[:pos]
-				}
-				if typ.Buf == parentName {
-					a.Val = parent.Size()
-					if typ.BitSize != 0 {
-						a.Val = a.Val * 8 / typ.BitSize
-					}
-					sizeAssigned = true
-					break
-				}
-			}
-			if sizeAssigned {
-				continue
-			}
-
-			panic(fmt.Sprintf("len field '%v' references non existent field '%v', argsMap: %+v",
-				typ.FieldName(), typ.Buf, argsMap))
-		}
-	}
-}
-
-func (target *Target) assignSizesArray(args []Arg) {
+func (target *Target) assignSizesArray(args []Arg, autos map[Arg]bool) {
 	parentsMap := make(map[Arg]Arg)
 	for _, arg := range args {
 		ForeachSubArg(arg, func(arg Arg, _ *ArgCtx) {
@@ -102,18 +134,18 @@ func (target *Target) assignSizesArray(args []Arg) {
 			}
 		})
 	}
-	target.assignSizes(args, parentsMap)
+	target.assignSizes(args, parentsMap, args, autos)
 	for _, arg := range args {
 		ForeachSubArg(arg, func(arg Arg, _ *ArgCtx) {
 			if _, ok := arg.Type().(*StructType); ok {
-				target.assignSizes(arg.(*GroupArg).Inner, parentsMap)
+				target.assignSizes(arg.(*GroupArg).Inner, parentsMap, args, autos)
 			}
 		})
 	}
 }
 
 func (target *Target) assignSizesCall(c *Call) {
-	target.assignSizesArray(c.Args)
+	target.assignSizesArray(c.Args, nil)
 }
 
 func (r *randGen) mutateSize(arg *ConstArg, parent []Arg) bool {
@@ -121,22 +153,25 @@ func (r *randGen) mutateSize(arg *ConstArg, parent []Arg) bool {
 	elemSize := typ.BitSize / 8
 	if elemSize == 0 {
 		elemSize = 1
-		for _, field := range parent {
-			if typ.Buf != field.Type().FieldName() {
-				continue
-			}
-			if inner := InnerArg(field); inner != nil {
-				switch targetType := inner.Type().(type) {
-				case *VmaType:
-					return false
-				case *ArrayType:
-					if targetType.Type.Varlen() {
-						return false
-					}
-					elemSize = targetType.Type.Size()
+		// TODO(dvyukov): implement path support for size mutation.
+		if len(typ.Path) == 1 {
+			for _, field := range parent {
+				if typ.Path[0] != field.Type().FieldName() {
+					continue
 				}
+				if inner := InnerArg(field); inner != nil {
+					switch targetType := inner.Type().(type) {
+					case *VmaType:
+						return false
+					case *ArrayType:
+						if targetType.Type.Varlen() {
+							return false
+						}
+						elemSize = targetType.Type.Size()
+					}
+				}
+				break
 			}
-			break
 		}
 	}
 	if r.oneOf(100) {

@@ -7,11 +7,14 @@ package dash
 
 import (
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/syzkaller/dashboard/dashapi"
+	"google.golang.org/appengine/user"
 )
 
 func init() {
@@ -29,6 +32,7 @@ var testConfig = &GlobalConfig{
 	EmailBlacklist: []string{
 		"\"Bar\" <BlackListed@Domain.com>",
 	},
+	DefaultNamespace: "test1",
 	Namespaces: map[string]*Config{
 		"test1": {
 			AccessLevel: AccessAdmin,
@@ -36,19 +40,28 @@ var testConfig = &GlobalConfig{
 			Clients: map[string]string{
 				client1: key1,
 			},
+			Repos: []KernelRepo{
+				{
+					URL:    "git://syzkaller.org",
+					Branch: "branch10",
+					Alias:  "repo10alias",
+					CC:     []string{"maintainers@repo10.org", "bugs@repo10.org"},
+				},
+				{
+					URL:    "git://github.com/google/syzkaller",
+					Branch: "master",
+					Alias:  "repo10alias",
+					CC:     []string{"maintainers@repo10.org", "bugs@repo10.org"},
+				},
+			},
 			Reporting: []Reporting{
 				{
 					Name:       "reporting1",
 					DailyLimit: 3,
+					Embargo:    14 * 24 * time.Hour,
+					Filter:     skipWithRepro,
 					Config: &TestConfig{
 						Index: 1,
-					},
-					Filter: func(bug *Bug) FilterResult {
-						if strings.HasPrefix(bug.Title, "skip without repro") &&
-							bug.ReproLevel != dashapi.ReproLevelNone {
-							return FilterSkip
-						}
-						return FilterReport
 					},
 				},
 				{
@@ -66,6 +79,14 @@ var testConfig = &GlobalConfig{
 			Clients: map[string]string{
 				client2: key2,
 			},
+			Repos: []KernelRepo{
+				{
+					URL:    "git://syzkaller.org",
+					Branch: "branch10",
+					Alias:  "repo10alias",
+					CC:     []string{"maintainers@repo10.org", "bugs@repo10.org"},
+				},
+			},
 			Managers: map[string]ConfigManager{
 				"restricted-manager": {
 					RestrictedTestingRepo:   "git://restricted.git/restricted.git",
@@ -76,14 +97,16 @@ var testConfig = &GlobalConfig{
 				{
 					Name:       "reporting1",
 					DailyLimit: 5,
+					Embargo:    14 * 24 * time.Hour,
+					Filter:     skipWithRepro,
 					Config: &EmailConfig{
-						Email:      "test@syzkaller.com",
-						Moderation: true,
+						Email: "test@syzkaller.com",
 					},
 				},
 				{
 					Name:       "reporting2",
 					DailyLimit: 3,
+					Filter:     skipWithRepro2,
 					Config: &EmailConfig{
 						Email:              "bugs@syzkaller.com",
 						DefaultMaintainers: []string{"default@maintainers.com"},
@@ -94,8 +117,8 @@ var testConfig = &GlobalConfig{
 					Name:       "reporting3",
 					DailyLimit: 3,
 					Config: &EmailConfig{
-						Email:              "bugs@syzkaller.com",
-						DefaultMaintainers: []string{"default@maintainers.com"},
+						Email:              "bugs2@syzkaller.com",
+						DefaultMaintainers: []string{"default2@maintainers.com"},
 						MailMaintainers:    true,
 					},
 				},
@@ -107,6 +130,13 @@ var testConfig = &GlobalConfig{
 			Key:         "adminkeyadminkeyadminkey",
 			Clients: map[string]string{
 				clientAdmin: keyAdmin,
+			},
+			Repos: []KernelRepo{
+				{
+					URL:    "git://syzkaller.org/access-admin.git",
+					Branch: "access-admin",
+					Alias:  "access-admin",
+				},
 			},
 			Reporting: []Reporting{
 				{
@@ -124,6 +154,13 @@ var testConfig = &GlobalConfig{
 			Key:         "userkeyuserkeyuserkey",
 			Clients: map[string]string{
 				clientUser: keyUser,
+			},
+			Repos: []KernelRepo{
+				{
+					URL:    "git://syzkaller.org/access-user.git",
+					Branch: "access-user",
+					Alias:  "access-user",
+				},
 			},
 			Reporting: []Reporting{
 				{
@@ -143,6 +180,13 @@ var testConfig = &GlobalConfig{
 			Clients: map[string]string{
 				clientPublic: keyPublic,
 			},
+			Repos: []KernelRepo{
+				{
+					URL:    "git://syzkaller.org/access-public.git",
+					Branch: "access-public",
+					Alias:  "access-public",
+				},
+			},
 			Reporting: []Reporting{
 				{
 					AccessLevel: AccessUser,
@@ -154,11 +198,6 @@ var testConfig = &GlobalConfig{
 					Config: &TestConfig{Index: 2},
 				},
 			},
-		},
-	},
-	KernelRepos: map[string]KernelRepo{
-		"repo10/branch10": {
-			Alias: "repo10alias",
 		},
 	},
 }
@@ -176,16 +215,28 @@ const (
 	keyPublic    = "clientpublickeyclientpublickey"
 )
 
+func skipWithRepro(bug *Bug) FilterResult {
+	if strings.HasPrefix(bug.Title, "skip with repro") &&
+		bug.ReproLevel != dashapi.ReproLevelNone {
+		return FilterSkip
+	}
+	return FilterReport
+}
+
+func skipWithRepro2(bug *Bug) FilterResult {
+	if strings.HasPrefix(bug.Title, "skip reporting2 with repro") &&
+		bug.ReproLevel != dashapi.ReproLevelNone {
+		return FilterSkip
+	}
+	return FilterReport
+}
+
 type TestConfig struct {
 	Index int
 }
 
 func (cfg *TestConfig) Type() string {
 	return "test"
-}
-
-func (cfg *TestConfig) NeedMaintainers() bool {
-	return false
 }
 
 func (cfg *TestConfig) Validate() error {
@@ -196,6 +247,9 @@ func testBuild(id int) *dashapi.Build {
 	return &dashapi.Build{
 		Manager:           fmt.Sprintf("manager%v", id),
 		ID:                fmt.Sprintf("build%v", id),
+		OS:                "linux",
+		Arch:              "amd64",
+		VMArch:            "amd64",
 		SyzkallerCommit:   fmt.Sprintf("syzkaller_commit%v", id),
 		CompilerID:        fmt.Sprintf("compiler%v", id),
 		KernelRepo:        fmt.Sprintf("repo%v", id),
@@ -237,7 +291,7 @@ func TestApp(t *testing.T) {
 	c := NewCtx(t)
 	defer c.Close()
 
-	c.expectOK(c.GET("/"))
+	c.expectOK(c.GET("/test1"))
 
 	apiClient1 := c.makeClient(client1, key1, false)
 	apiClient2 := c.makeClient(client2, key2, false)
@@ -284,4 +338,218 @@ func TestApp(t *testing.T) {
 		Status:     dashapi.BugStatusOpen,
 		ReproLevel: dashapi.ReproLevelC,
 	})
+}
+
+func TestRedirects(t *testing.T) {
+	c := NewCtx(t)
+	defer c.Close()
+
+	checkRedirect(c, AccessUser, "/", "/test1", http.StatusFound) // redirect to default namespace
+	checkRedirect(c, AccessAdmin, "/", "/admin", http.StatusFound)
+	checkLoginRedirect(c, AccessPublic, "/access-user") // not accessible namespace
+
+	_, err := c.httpRequest("GET", "/access-user", "", AccessUser)
+	c.expectOK(err)
+}
+
+func checkLoginRedirect(c *Ctx, accessLevel AccessLevel, url string) {
+	to, err := user.LoginURL(c.ctx, url)
+	if err != nil {
+		c.t.Fatal(err)
+	}
+	checkRedirect(c, accessLevel, url, to, http.StatusTemporaryRedirect)
+}
+
+func checkRedirect(c *Ctx, accessLevel AccessLevel, from, to string, status int) {
+	_, err := c.httpRequest("GET", from, "", accessLevel)
+	c.expectNE(err, nil)
+	httpErr, ok := err.(HttpError)
+	c.expectTrue(ok)
+	c.expectEQ(httpErr.Code, status)
+	c.expectEQ(httpErr.Headers["Location"], []string{to})
+}
+
+// Test purging of old crashes for bugs with lots of crashes.
+func TestPurgeOldCrashes(t *testing.T) {
+	if testing.Short() {
+		t.Skip()
+	}
+	c := NewCtx(t)
+	defer c.Close()
+
+	build := testBuild(1)
+	c.client.UploadBuild(build)
+
+	// First, send 3 crashes that are reported. These need to be preserved regardless.
+	crash := testCrash(build, 1)
+	crash.ReproOpts = []byte("no repro")
+	c.client.ReportCrash(crash)
+	rep := c.client.pollBug()
+
+	crash.ReproSyz = []byte("getpid()")
+	crash.ReproOpts = []byte("syz repro")
+	c.client.ReportCrash(crash)
+	c.client.pollBug()
+
+	crash.ReproC = []byte("int main() {}")
+	crash.ReproOpts = []byte("C repro")
+	c.client.ReportCrash(crash)
+	c.client.pollBug()
+
+	// Now report lots of bugs with/without repros. Some of the older ones should be purged.
+	const totalReported = 3 * maxCrashes
+	for i := 0; i < totalReported; i++ {
+		c.advanceTime(2 * time.Hour) // This ensures that crashes are saved.
+		crash.ReproSyz = nil
+		crash.ReproC = nil
+		crash.ReproOpts = []byte(fmt.Sprintf("%v", i))
+		c.client.ReportCrash(crash)
+
+		crash.ReproSyz = []byte("syz repro")
+		crash.ReproC = []byte("C repro")
+		crash.ReproOpts = []byte(fmt.Sprintf("%v", i))
+		c.client.ReportCrash(crash)
+	}
+	bug, _, _ := c.loadBug(rep.ID)
+	crashes, _, err := queryCrashesForBug(c.ctx, bug.key(c.ctx), 10*totalReported)
+	c.expectOK(err)
+	// First, count how many crashes of different types we have.
+	// We should get all 3 reported crashes + some with repros and some without repros.
+	reported, norepro, repro := 0, 0, 0
+	for _, crash := range crashes {
+		if !crash.Reported.IsZero() {
+			reported++
+		} else if crash.ReproSyz == 0 {
+			norepro++
+		} else {
+			repro++
+		}
+	}
+	c.t.Logf("got reported=%v, norepro=%v, repro=%v, maxCrashes=%v",
+		reported, norepro, repro, maxCrashes)
+	if reported != 3 ||
+		norepro < maxCrashes || norepro > maxCrashes+10 ||
+		repro < maxCrashes || repro > maxCrashes+10 {
+		c.t.Fatalf("bad purged crashes")
+	}
+	// Then, check that latest crashes were preserved.
+	for _, crash := range crashes {
+		if !crash.Reported.IsZero() {
+			continue
+		}
+		idx, err := strconv.Atoi(string(crash.ReproOpts))
+		c.expectOK(err)
+		count := norepro
+		if crash.ReproSyz != 0 {
+			count = repro
+		}
+		if idx < totalReported-count {
+			c.t.Errorf("preserved bad crash repro=%v: %v", crash.ReproC != 0, idx)
+		}
+	}
+}
+
+func TestManagerFailedBuild(t *testing.T) {
+	c := NewCtx(t)
+	defer c.Close()
+
+	// Upload and check first build.
+	build := testBuild(1)
+	c.client.UploadBuild(build)
+	checkManagerBuild(c, build, nil, nil)
+
+	// Upload and check second build.
+	build.ID = "id1"
+	build.KernelCommit = "kern1"
+	build.SyzkallerCommit = "syz1"
+	c.client.UploadBuild(build)
+	checkManagerBuild(c, build, nil, nil)
+
+	// Upload failed kernel build.
+	failedBuild := new(dashapi.Build)
+	*failedBuild = *build
+	failedBuild.ID = "id2"
+	failedBuild.KernelCommit = "kern2"
+	failedBuild.KernelCommitTitle = "failed build 1"
+	failedBuild.SyzkallerCommit = "syz2"
+	c.expectOK(c.client.ReportBuildError(&dashapi.BuildErrorReq{
+		Build: *failedBuild,
+		Crash: dashapi.Crash{
+			Title: "failed build 1",
+		},
+	}))
+	checkManagerBuild(c, build, failedBuild, nil)
+
+	// Now the old good build again, nothing should change.
+	c.client.UploadBuild(build)
+	checkManagerBuild(c, build, failedBuild, nil)
+
+	// New good kernel build, failed build must reset.
+	build.ID = "id3"
+	build.KernelCommit = "kern3"
+	c.client.UploadBuild(build)
+	checkManagerBuild(c, build, nil, nil)
+
+	// Now more complex scenario: OK -> failed kernel -> failed kernel+syzkaller -> failed syzkaller -> OK.
+	failedBuild.ID = "id4"
+	failedBuild.KernelCommit = "kern4"
+	failedBuild.KernelCommitTitle = "failed build 4"
+	failedBuild.SyzkallerCommit = "syz4"
+	c.expectOK(c.client.ReportBuildError(&dashapi.BuildErrorReq{
+		Build: *failedBuild,
+		Crash: dashapi.Crash{
+			Title: "failed build 4",
+		},
+	}))
+	checkManagerBuild(c, build, failedBuild, nil)
+
+	failedBuild2 := new(dashapi.Build)
+	*failedBuild2 = *failedBuild
+	failedBuild2.ID = "id5"
+	failedBuild2.KernelCommit = ""
+	failedBuild2.KernelCommitTitle = "failed build 5"
+	failedBuild2.SyzkallerCommit = "syz5"
+	c.expectOK(c.client.ReportBuildError(&dashapi.BuildErrorReq{
+		Build: *failedBuild2,
+		Crash: dashapi.Crash{
+			Title: "failed build 5",
+		},
+	}))
+	checkManagerBuild(c, build, failedBuild, failedBuild2)
+
+	build.ID = "id6"
+	build.KernelCommit = "kern6"
+	c.client.UploadBuild(build)
+	checkManagerBuild(c, build, nil, failedBuild2)
+
+	build.ID = "id7"
+	build.KernelCommit = "kern6"
+	build.SyzkallerCommit = "syz7"
+	c.client.UploadBuild(build)
+	checkManagerBuild(c, build, nil, nil)
+}
+
+func checkManagerBuild(c *Ctx, build, failedKernelBuild, failedSyzBuild *dashapi.Build) {
+	mgr, dbBuild := c.loadManager("test1", build.Manager)
+	c.expectEQ(mgr.CurrentBuild, build.ID)
+	compareBuilds(c, dbBuild, build)
+	checkBuildBug(c, mgr.FailedBuildBug, failedKernelBuild)
+	checkBuildBug(c, mgr.FailedSyzBuildBug, failedSyzBuild)
+}
+
+func checkBuildBug(c *Ctx, hash string, build *dashapi.Build) {
+	if build == nil {
+		c.expectEQ(hash, "")
+		return
+	}
+	c.expectNE(hash, "")
+	bug, _, dbBuild := c.loadBugByHash(hash)
+	c.expectEQ(bug.Title, build.KernelCommitTitle)
+	compareBuilds(c, dbBuild, build)
+}
+
+func compareBuilds(c *Ctx, dbBuild *Build, build *dashapi.Build) {
+	c.expectEQ(dbBuild.ID, build.ID)
+	c.expectEQ(dbBuild.KernelCommit, build.KernelCommit)
+	c.expectEQ(dbBuild.SyzkallerCommit, build.SyzkallerCommit)
 }

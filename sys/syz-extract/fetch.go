@@ -36,10 +36,9 @@ func extract(info *compiler.ConstInfo, cc string, args []string, addSource strin
 			valMap[val] = true
 		}
 		for _, errMsg := range []string{
-			"error: ‘([a-zA-Z0-9_]+)’ undeclared",
-			"error: '([a-zA-Z0-9_]+)' undeclared",
-			"note: in expansion of macro ‘([a-zA-Z0-9_]+)’",
-			"error: use of undeclared identifier '([a-zA-Z0-9_]+)'",
+			`error: [‘']([a-zA-Z0-9_]+)[’'] undeclared`,
+			`note: in expansion of macro [‘']([a-zA-Z0-9_]+)[’']`,
+			`error: use of undeclared identifier [‘']([a-zA-Z0-9_]+)[’']`,
 		} {
 			re := regexp.MustCompile(errMsg)
 			matches := re.FindAllSubmatch(out, -1)
@@ -59,7 +58,8 @@ func extract(info *compiler.ConstInfo, cc string, args []string, addSource strin
 		}
 		bin, out, err = compile(cc, args, data)
 		if err != nil {
-			return nil, nil, fmt.Errorf("failed to run compiler: %v\n%v", err, string(out))
+			return nil, nil, fmt.Errorf("failed to run compiler: %v %v\n%v\n%v",
+				cc, args, err, string(out))
 		}
 	}
 	defer os.Remove(bin)

@@ -427,13 +427,35 @@ func TestSerializeForExec(t *testing.T) {
 			},
 			nil,
 		},
+		{
+			"test$csum_ipv4_tcp(&(0x7f0000000000)={{0x0, 0x1, 0x2}, {{0x0}, \"ab\"}})",
+			[]uint64{
+				execInstrCopyin, dataOffset + 0, execArgConst, 2, 0x0,
+				execInstrCopyin, dataOffset + 2, execArgConst, 4 | 1<<8, 0x1,
+				execInstrCopyin, dataOffset + 6, execArgConst, 4 | 1<<8, 0x2,
+				execInstrCopyin, dataOffset + 10, execArgConst, 2, 0x0,
+				execInstrCopyin, dataOffset + 12, execArgData, 1, 0xab,
+
+				execInstrCopyin, dataOffset + 10, execArgCsum, 2, ExecArgCsumInet, 5,
+				ExecArgCsumChunkData, dataOffset + 2, 4,
+				ExecArgCsumChunkData, dataOffset + 6, 4,
+				ExecArgCsumChunkConst, 0x0600, 2,
+				ExecArgCsumChunkConst, 0x0300, 2,
+				ExecArgCsumChunkData, dataOffset + 10, 3,
+				execInstrCopyin, dataOffset + 0, execArgCsum, 2, ExecArgCsumInet, 1,
+				ExecArgCsumChunkData, dataOffset + 0, 10,
+				callID("test$csum_ipv4_tcp"), ExecNoCopyout, 1, execArgConst, ptrSize, dataOffset,
+				execInstrEOF,
+			},
+			nil,
+		},
 	}
 
 	buf := make([]byte, ExecBufferSize)
 	for i, test := range tests {
 		i, test := i, test
 		t.Run(fmt.Sprintf("%v:%v", i, test.prog), func(t *testing.T) {
-			p, err := target.Deserialize([]byte(test.prog))
+			p, err := target.Deserialize([]byte(test.prog), Strict)
 			if err != nil {
 				t.Fatalf("failed to deserialize prog %v: %v", i, err)
 			}

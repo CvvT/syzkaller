@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/google/syzkaller/pkg/config"
+	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/vm/vmimpl"
 )
@@ -64,10 +65,11 @@ func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
 	if err := config.LoadData(env.Config, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse kvm vm config: %v", err)
 	}
-	if cfg.Count < 1 || cfg.Count > 1000 {
-		return nil, fmt.Errorf("invalid config param count: %v, want [1, 1000]", cfg.Count)
+	if cfg.Count < 1 || cfg.Count > 128 {
+		return nil, fmt.Errorf("invalid config param count: %v, want [1, 128]", cfg.Count)
 	}
-	if env.Debug {
+	if env.Debug && cfg.Count > 1 {
+		log.Logf(0, "limiting number of VMs from %v to 1 in debug mode", cfg.Count)
 		cfg.Count = 1
 	}
 	if env.Image != "" {
@@ -239,7 +241,7 @@ func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command strin
 	if err := osutil.WriteExecFile(tmpFile, []byte(command)); err != nil {
 		return nil, nil, err
 	}
-	if err := os.Rename(tmpFile, cmdFile); err != nil {
+	if err := osutil.Rename(tmpFile, cmdFile); err != nil {
 		return nil, nil, err
 	}
 
@@ -285,8 +287,8 @@ func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command strin
 	return outputC, errorC, nil
 }
 
-func (inst *instance) Diagnose() bool {
-	return false
+func (inst *instance) Diagnose() ([]byte, bool) {
+	return nil, false
 }
 
 const script = `#! /bin/bash

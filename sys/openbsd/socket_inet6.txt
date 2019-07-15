@@ -14,11 +14,6 @@ include <sys/sockio.h>
 
 resource sock_in6[sock]
 
-sock_in6_pair {
-	f0	sock_in6
-	f1	sock_in6
-}
-
 sockaddr_in6 {
 	family	const[AF_INET6, int16]
 	port	sock_port
@@ -27,7 +22,6 @@ sockaddr_in6 {
 }
 
 socket$inet6(domain const[AF_INET6], type flags[socket_type], proto int8) sock_in6
-socketpair$inet6(domain const[AF_INET6], type flags[socket_type], proto int8, fds ptr[out, sock_in6_pair])
 accept$inet6(fd sock_in6, peer ptr[out, sockaddr_in6, opt], peerlen ptr[inout, len[peer, int32]]) sock_in6
 bind$inet6(fd sock_in6, addr ptr[in, sockaddr_in6], addrlen len[addr])
 connect$inet6(fd sock_in6, addr ptr[in, sockaddr_in6], addrlen len[addr])
@@ -52,7 +46,9 @@ mif6ctl {
 	mif6c_mifi	int16
 	mif6c_flags	flags[mif6c_flags, int8]
 	vifc_threshold	int8
-	mif6c_pifi	int16
+# Do not allow low interface indices since one of them is likely to be the
+# egress interface vio0 used on GCE instances during fuzzing.
+	mif6c_pifi	int16[4:0xffff]
 	vifc_rate_limit	int32
 }
 

@@ -53,7 +53,7 @@ mac_addr_link_local {
 mac_addr_link_local_values = 0x0, 0x1, 0x2, 0x3, 0xe
 
 # This corresponds to the last digit in DEV_MAC/DEV_IPV4/DEV_IPV6 in executor/common_linux.h
-type netdev_addr_id int8[10:33]
+type netdev_addr_id int8[10:43]
 
 mac_addr [
 	empty		array[const[0x0, int8], 6]
@@ -292,8 +292,6 @@ x25_packet {
 	payload	array[int8]
 } [packed]
 
-# TODO: open x25 sockets from userspace
-
 ################################################################################
 ##################################### IPv4 #####################################
 ################################################################################
@@ -316,13 +314,23 @@ type ipv4_addr_t[LAST] {
 	a3	LAST
 } [packed]
 
+ipv4_addr_initdev {
+	a0	const[0xac, int8]
+	a1	const[0x1e, int8]
+	a2	int8[0:1]
+	a3	proc[1, 1, int8]
+}
+
 ipv4_addr [
+# random
+	rand_addr	int32be
 # 0.0.0.0
 	empty		const[0x0, int32be]
 # These correspond to LOCAL_IPV4/REMOTE_IPV4/DEV_IPV4 in executor/common_linux.h
 	local		ipv4_addr_t[const[170, int8]]
 	remote		ipv4_addr_t[const[187, int8]]
 	dev		ipv4_addr_t[netdev_addr_id]
+	initdev		ipv4_addr_initdev
 # 127.0.0.1
 	loopback	const[0x7f000001, int32be]
 # 224.0.0.1
@@ -331,9 +339,7 @@ ipv4_addr [
 	multicast2	const[0xe0000002, int32be]
 # 255.255.255.255
 	broadcast	const[0xffffffff, int32be]
-# random
-	rand_addr	int32be
-]
+] [size[4]]
 
 type ipv4_addr_mask flags[ipv4_addr_mask_vals, int32be]
 ipv4_addr_mask_vals = 0, 0xff000000, 0xffffff00, 0xffffffff, 0xff
@@ -490,6 +496,14 @@ type ipv6_addr_t[LAST] {
 	a3	LAST
 } [packed]
 
+ipv6_addr_initdev {
+	a0	const[0xfe, int8]
+	a1	const[0x88, int8]
+	a2	array[const[0x0, int8], 12]
+	a3	int8[0:1]
+	a4	proc[1, 1, int8]
+}
+
 ipv6_addr_loopback {
 	a0	const[0, int64be]
 	a1	const[1, int64be]
@@ -516,16 +530,18 @@ ipv6_addr_multicast2 {
 } [packed]
 
 ipv6_addr [
+	rand_addr	array[int8, 16]
 	empty		ipv6_addr_empty
 # These correspond to LOCAL_IPV6/REMOTE_IPV6/DEV_IPV6 in executor/common_linux.h
 	local		ipv6_addr_t[const[0xaa, int8]]
 	remote		ipv6_addr_t[const[0xbb, int8]]
 	dev		ipv6_addr_t[netdev_addr_id]
+	initdev		ipv6_addr_initdev
 	loopback	ipv6_addr_loopback
 	ipv4		ipv6_addr_ipv4
 	mcast1		ipv6_addr_multicast1
 	mcast2		ipv6_addr_multicast2
-]
+] [size[16]]
 
 type ipv6_addr_mask array[flags[ipv4_addr_mask_vals, int32be], 4]
 
@@ -699,6 +715,7 @@ ipv4_payload [
 	dccp	dccp_packet
 	igmp	igmp_packet
 	gre	gre_packet
+	tipc	tipc_packet
 ] [varlen]
 
 ipv6_payload [
@@ -707,6 +724,7 @@ ipv6_payload [
 	icmpv6	icmpv6_packet
 	dccp	dccp_packet
 	gre	gre_packet
+	tipc	tipc_packet
 ] [varlen]
 
 ################################################################################
@@ -733,6 +751,7 @@ tcp_option [
 	fastopen	tcp_fastopen_option
 	exp_fastopen	tcp_exp_fastopen_option
 	exp_smc		tcp_exp_smc_option
+	mptcp		tcp_mptcp_option
 ] [varlen]
 
 tcp_option_types = TCPOPT_NOP, TCPOPT_EOL, TCPOPT_MSS, TCPOPT_WINDOW, TCPOPT_SACK_PERM, TCPOPT_SACK, TCPOPT_TIMESTAMP, TCPOPT_MD5SIG, TCPOPT_FASTOPEN, TCPOPT_EXP
@@ -1255,6 +1274,71 @@ icmpv6_ni_packet {
 	data	array[int8]
 } [packed]
 
+icmpv6_ndisc_option_types = ND_OPT_SOURCE_LL_ADDR, ND_OPT_TARGET_LL_ADDR, ND_OPT_PREFIX_INFO, ND_OPT_REDIRECT_HDR, ND_OPT_MTU, ND_OPT_NONCE, ND_OPT_ROUTE_INFO, ND_OPT_RDNSS, ND_OPT_DNSSL, ND_OPT_6CO
+
+# https://tools.ietf.org/html/rfc4861#section-4.6
+icmpv6_ndisc_option {
+	option_type	flags[icmpv6_ndisc_option_types, int8]
+	length		bytesize8[parent, int8]
+# TODO: define the option formats
+	data		array[int8]
+} [packed]
+
+# https://tools.ietf.org/html/rfc4861#section-4.1
+icmpv6_ndisc_router_solicit_packet {
+	type	const[NDISC_ROUTER_SOLICITATION, int8]
+	code	const[0, int8]
+	csum	csum[parent, pseudo, IPPROTO_ICMPV6, int16be]
+	unused	array[const[0, int8], 4]
+	options	array[icmpv6_ndisc_option]
+} [packed]
+
+# https://tools.ietf.org/html/rfc4861#section-4.2
+icmpv6_ndisc_router_advert_packet {
+	type		const[NDISC_ROUTER_ADVERTISEMENT, int8]
+	code		const[0, int8]
+	csum		csum[parent, pseudo, IPPROTO_ICMPV6, int16be]
+	cur_hop_limit	int8
+# TODO: Implement bitflags for the router advert flags
+	router_flags	int8
+	router_lifetime	int16
+	reachable_time	int32
+	retrans_time	int32
+	options		array[icmpv6_ndisc_option]
+} [packed]
+
+# https://tools.ietf.org/html/rfc4861#section-4.3
+icmpv6_ndisc_neigh_solicit_packet {
+	type		const[NDISC_NEIGHBOUR_SOLICITATION, int8]
+	code		const[0, int8]
+	csum		csum[parent, pseudo, IPPROTO_ICMPV6, int16be]
+	target_addr	ipv6_addr
+	options		array[icmpv6_ndisc_option]
+} [packed]
+
+# https://tools.ietf.org/html/rfc4861#section-4.4
+icmpv6_ndisc_neigh_advert_packet {
+	type		const[NDISC_NEIGHBOUR_ADVERTISEMENT, int8]
+	code		const[0, int8]
+	csum		csum[parent, pseudo, IPPROTO_ICMPV6, int16be]
+# TODO: Implement bitflags for the neighbor advert flags
+	neighbor_flags	int8
+	unused		array[const[0, int8], 3]
+	target_addr	ipv6_addr
+	options		array[icmpv6_ndisc_option]
+} [packed]
+
+# https://tools.ietf.org/html/rfc4861#section-4.5
+icmpv6_ndisc_redir_packet {
+	type		const[NDISC_REDIRECT, int8]
+	code		const[0, int8]
+	csum		csum[parent, pseudo, IPPROTO_ICMPV6, int16be]
+	unused		array[const[0, int8], 4]
+	target_addr	ipv6_addr
+	dst_addr	ipv6_addr
+	options		array[icmpv6_ndisc_option]
+} [packed]
+
 icmpv6_packet [
 	dest_unreach	icmpv6_dest_unreach_packet
 	pkt_toobig	icmpv6_pkt_toobig_packet
@@ -1264,6 +1348,11 @@ icmpv6_packet [
 	echo_reply	icmpv6_echo_reply_packet
 	mld		icmpv6_mld_packet
 	ni		icmpv6_ni_packet
+	ndisc_rs	icmpv6_ndisc_router_solicit_packet
+	ndisc_ra	icmpv6_ndisc_router_advert_packet
+	ndisc_na	icmpv6_ndisc_neigh_advert_packet
+	ndisc_ns	icmpv6_ndisc_neigh_solicit_packet
+	ndisc_redir	icmpv6_ndisc_redir_packet
 # TODO: ICMPV6_MLD2_REPORT
 # TODO: ICMPV6_DHAAD_REQUEST, ICMPV6_DHAAD_REPLY, ICMPV6_MOBILE_PREFIX_SOL, ICMPV6_MOBILE_PREFIX_ADV (with ipv6 ext headers)
 ] [varlen]
@@ -1335,12 +1424,11 @@ mpls_packet {
 	payload	mpls_payload
 } [packed]
 
-# TODO: is it this ordering or reverse?
 mpls_label {
-	ttl	int32be:8
-	s	int32be:1
-	tc	int32be:3
 	label	int32be:20
+	tc	const[0, int32be:3]
+	s	int32be:1
+	ttl	const[0, int32be:8]
 }
 
 mpls_payload [
@@ -1349,3 +1437,140 @@ mpls_payload [
 	ipv6	ipv6_packet
 	llc	llc_packet
 ] [varlen]
+
+################################################################################
+###################################### TIPC ####################################
+################################################################################
+
+# http://tipc.sourceforge.net/protocol.html
+# http://tipc.sourceforge.net/protocol.html#anchor50
+
+# TODO: describe more TIPC packets, the current description is far from being complete.
+# But first we need to ensure that syzkaller manages to enable TIPC receiving,
+# because currently it always crashes kernel earlier.
+# Also, do we need to nest TIPC packets in UDP for UDP media?
+
+include <uapi/linux/tipc.h>
+include <net/tipc/msg.h>
+
+tipc_packet [
+	payload_conn		tipc_payload_msg[tipc_payload_hdr6[TIPC_CONN_MSG]]
+	payload_mcast		tipc_payload_msg[tipc_payload_hdr11[TIPC_MCAST_MSG]]
+	payload_named		tipc_payload_msg[tipc_payload_hdr10[TIPC_NAMED_MSG]]
+	payload_direct		tipc_payload_msg[tipc_payload_hdr8[TIPC_DIRECT_MSG]]
+	name_distributor	tipc_name_distributor_msg
+] [varlen]
+
+type tipc_payload_msg[HDR] {
+	hdr	tipc_payload_hdr[HDR]
+	data	array[const[0, int8]]
+}
+
+type tipc_payload_hdr[HDR] {
+	hdr	HDR
+}
+
+type tipc_payload_hdr6[TYP] {
+# w0
+	message_size		bytesize[tipc_payload_msg, int32be:17]
+	y			const[0, int32be:1]
+	s			int32be:1
+	d			int32be:1
+	n			int32be:1
+	hsize			bytesize4[tipc_payload_hdr, int32be:4]
+	user			flags[tipc_importance, int32be:4]
+	ver			const[TIPC_VERSION, int32be:3]
+# w1
+	broadcast_acknowledge	int32be:16
+	res			const[0, int32be:3]
+	lcs			flags[tipc_scope, int32be:2]
+	reroute			int32be:4
+	error			flags[tipc_error, int32be:4]
+	mtype			const[TYP, int32be:3]
+# w2
+	link_sequence		int32be:16
+	link_acknowledge	int32be:16
+# w3
+	previous_node		int32be[0:4]
+# w4
+	originating_port	int32be[20000:20004]
+# w5
+	destination_port	int32be[20000:20004]
+} [size[24]]
+
+type tipc_payload_hdr8[TYP] {
+	hdr6			tipc_payload_hdr6[TYP]
+# w6
+	originating_node	int32be[0:4]
+# w7
+	destination_node	int32be[0:4]
+} [size[32]]
+
+type tipc_payload_hdr10[TYP] {
+	hdr8		tipc_payload_hdr8[TYP]
+# w8
+	name_type	int32be[0:4]
+# w9
+	name_instance	int32be[0:4]
+} [size[40]]
+
+type tipc_payload_hdr11[TYP] {
+	hdr10			tipc_payload_hdr10[TYP]
+# w10
+	name_sequence_upper	int32be[0:4]
+} [size[44]]
+
+tipc_name_distributor_msg {
+	hdr	tipc_name_distributor_hdr
+	data	array[tipc_name_publication]
+}
+
+tipc_name_distributor_hdr {
+# w0
+	message_size		bytesize[tipc_name_distributor_msg, int32be:17]
+	y			const[0, int32be:1]
+	s			const[0, int32be:1]
+	d			const[0, int32be:1]
+	n			int32be:1
+	hsize			bytesize4[parent, int32be:4]
+	user			const[NAME_DISTRIBUTOR, int32be:4]
+	ver			const[TIPC_VERSION, int32be:3]
+# w1
+	broadcast_acknowledge	int32be:16
+	res			const[0, int32be:13]
+	mtype			int32be:3[0:1]
+# w2
+	link_sequence		int32be:16
+	link_acknowledge	int32be:16
+# w3
+	previous_node		int32be[0:4]
+# w4
+	originating_port	int32be[20000:20004]
+# w5
+	destination_port	int32be[20000:20004]
+# w6
+	originating_node	int32be[0:4]
+# w7
+	destination_node	int32be[0:4]
+# w8
+	res1			const[0, int32be]
+# w9
+	res2			const[0, int32be:23]
+	m			int32be:1
+	item_size		const[7, int32be:8]
+}
+
+tipc_name_publication {
+	type		int32be
+	lower_bound	int32be
+	upper_bound	int32be
+	reference	int32be
+	key		int32be
+	node		int32be
+	scope		int32be:4
+	res		int32be:28
+} [size[28]]
+
+tipc_importance = TIPC_LOW_IMPORTANCE, TIPC_MEDIUM_IMPORTANCE, TIPC_HIGH_IMPORTANCE, TIPC_CRITICAL_IMPORTANCE
+tipc_error = TIPC_OK, TIPC_ERR_NO_NAME, TIPC_ERR_NO_PORT, TIPC_ERR_NO_NODE, TIPC_ERR_OVERLOAD, TIPC_CONN_SHUTDOWN
+tipc_scope = TIPC_CFG_SRV, TIPC_ZONE_SCOPE, TIPC_CLUSTER_SCOPE, TIPC_NODE_SCOPE

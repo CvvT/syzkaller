@@ -9,7 +9,11 @@ var commonHeader = `
 #define _GNU_SOURCE
 #endif
 
+#if GOOS_freebsd || GOOS_test && HOSTGOOS_freebsd
+#include <sys/endian.h>
+#else
 #include <endian.h>
+#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,8 +33,9 @@ NORETURN void doexit(int status)
 }
 #endif
 
-#if SYZ_EXECUTOR || SYZ_PROCS || SYZ_REPEAT && SYZ_ENABLE_CGROUPS || \
-    __NR_syz_mount_image || __NR_syz_read_part_table
+#if SYZ_EXECUTOR || SYZ_PROCS || SYZ_REPEAT && SYZ_ENABLE_CGROUPS ||         \
+    SYZ_ENABLE_NETDEV || __NR_syz_mount_image || __NR_syz_read_part_table || \
+    __NR_syz_usb_connect || (GOOS_openbsd || GOOS_freebsd) && SYZ_TUN_ENABLE
 unsigned long long procid;
 #endif
 
@@ -117,14 +122,16 @@ static void kill_and_wait(int pid, int* status)
 #endif
 
 #if !GOOS_windows
-#if SYZ_EXECUTOR || SYZ_THREADED || SYZ_REPEAT && SYZ_EXECUTOR_USES_FORK_SERVER
+#if SYZ_EXECUTOR || SYZ_THREADED || SYZ_REPEAT && SYZ_EXECUTOR_USES_FORK_SERVER || \
+    __NR_syz_usb_connect
 static void sleep_ms(uint64 ms)
 {
 	usleep(ms * 1000);
 }
 #endif
 
-#if SYZ_EXECUTOR || SYZ_THREADED || SYZ_REPEAT && SYZ_EXECUTOR_USES_FORK_SERVER
+#if SYZ_EXECUTOR || SYZ_THREADED || SYZ_REPEAT && SYZ_EXECUTOR_USES_FORK_SERVER || \
+    SYZ_ENABLE_LEAK
 #include <time.h>
 
 static uint64 current_time_ms(void)
@@ -136,14 +143,18 @@ static uint64 current_time_ms(void)
 }
 #endif
 
-#if SYZ_EXECUTOR || SYZ_USE_TMP_DIR
+#if SYZ_EXECUTOR || SYZ_SANDBOX_ANDROID_UNTRUSTED_APP || SYZ_USE_TMP_DIR
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 static void use_temporary_dir(void)
 {
+#if SYZ_SANDBOX_ANDROID_UNTRUSTED_APP
+	char tmpdir_template[] = "/data/data/syzkaller/syzkaller.XXXXXX";
+#else
 	char tmpdir_template[] = "./syzkaller.XXXXXX";
+#endif
 	char* tmpdir = mkdtemp(tmpdir_template);
 	if (!tmpdir)
 		fail("failed to mkdtemp");
@@ -193,12 +204,13 @@ static void remove_dir(const char* dir)
 #endif
 
 #if !GOOS_linux
-#if SYZ_EXECUTOR || SYZ_FAULT_INJECTION
+#if SYZ_EXECUTOR
 static int inject_fault(int nth)
 {
 	return 0;
 }
 #endif
+
 #if SYZ_EXECUTOR
 static int fault_injected(int fail_fd)
 {
@@ -209,6 +221,7 @@ static int fault_injected(int fail_fd)
 
 #if !GOOS_windows
 #if SYZ_EXECUTOR || SYZ_THREADED
+#include <errno.h>
 #include <pthread.h>
 
 static void thread_start(void* (*fn)(void*), void* arg)
@@ -217,9 +230,19 @@ static void thread_start(void* (*fn)(void*), void* arg)
 	pthread_attr_t attr;
 	pthread_attr_init(&attr);
 	pthread_attr_setstacksize(&attr, 128 << 10);
-	if (pthread_create(&th, &attr, fn, arg))
-		exitf("pthread_create failed");
-	pthread_attr_destroy(&attr);
+	int i;
+	for (i = 0; i < 100; i++) {
+		if (pthread_create(&th, &attr, fn, arg) == 0) {
+			pthread_attr_destroy(&attr);
+			return;
+		}
+		if (errno == EAGAIN) {
+			usleep(50);
+			continue;
+		}
+		break;
+	}
+	exitf("pthread_create failed");
 }
 
 #endif
@@ -240,9 +263,9 @@ typedef struct {
 static void event_init(event_t* ev)
 {
 	if (pthread_mutex_init(&ev->mu, 0))
-		fail("pthread_mutex_init failed");
+		exitf("pthread_mutex_init failed");
 	if (pthread_cond_init(&ev->cv, 0))
-		fail("pthread_cond_init failed");
+		exitf("pthread_cond_init failed");
 	ev->state = 0;
 }
 
@@ -302,19 +325,10 @@ static int event_timedwait(event_t* ev, uint64 timeout)
 #endif
 
 #if SYZ_EXECUTOR || SYZ_USE_BITMASKS
-#define BITMASK_LEN(type, bf_len) (type)((1ull << (bf_len)) - 1)
-
-#define BITMASK_LEN_OFF(type, bf_off, bf_len) (type)(BITMASK_LEN(type, (bf_len)) << (bf_off))
-
-#define STORE_BY_BITMASK(type, addr, val, bf_off, bf_len)                         \
-	if ((bf_off) == 0 && (bf_len) == 0) {                                     \
-		*(type*)(addr) = (type)(val);                                     \
-	} else {                                                                  \
-		type new_val = *(type*)(addr);                                    \
-		new_val &= ~BITMASK_LEN_OFF(type, (bf_off), (bf_len));            \
-		new_val |= ((type)(val)&BITMASK_LEN(type, (bf_len))) << (bf_off); \
-		*(type*)(addr) = new_val;                                         \
-	}
+#define BITMASK(bf_off, bf_len) (((1ull << (bf_len)) - 1) << (bf_off))
+#define STORE_BY_BITMASK(type, htobe, addr, val, bf_off, bf_len)                        \
+	*(type*)(addr) = htobe((htobe(*(type*)(addr)) & ~BITMASK((bf_off), (bf_len))) | \
+			       (((type)(val) << (bf_off)) & BITMASK((bf_off), (bf_len))))
 #endif
 
 #if SYZ_EXECUTOR || SYZ_USE_CHECKSUMS
@@ -349,14 +363,6 @@ static uint16 csum_inet_digest(struct csum_inet* csum)
 }
 #endif
 
-#if SYZ_EXECUTOR || __NR_syz_execute_func
-static long syz_execute_func(long text)
-{
-	((void (*)(void))(text))();
-	return 0;
-}
-#endif
-
 #if GOOS_akaros
 
 #include <ros/syscall.h>
@@ -368,7 +374,7 @@ static void loop();
 static int do_sandbox_none(void)
 {
 	loop();
-	doexit(0);
+	return 0;
 }
 #endif
 
@@ -390,28 +396,15 @@ void child()
 }
 #endif
 
-#if SYZ_EXECUTOR
-#define do_sandbox_setuid() 0
-#define do_sandbox_namespace() 0
-#endif
-
 #elif GOOS_freebsd || GOOS_netbsd || GOOS_openbsd
 
 #include <unistd.h>
 
-#if SYZ_EXECUTOR || SYZ_SANDBOX_NONE
-static void loop();
-static int do_sandbox_none(void)
-{
-	loop();
-	return 0;
-}
-#endif
-
-#if SYZ_EXECUTOR
-#define do_sandbox_setuid() 0
-#define do_sandbox_namespace() 0
-#endif
+#include <pwd.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <string.h>
+#include <sys/syscall.h>
 
 #if GOOS_openbsd
 
@@ -419,12 +412,8 @@ static int do_sandbox_none(void)
 
 #if SYZ_EXECUTOR || __NR_syz_open_pts
 
-#if defined(__OpenBSD__)
 #include <termios.h>
 #include <util.h>
-#else
-#include <pty.h>
-#endif
 
 static uintptr_t syz_open_pts(void)
 {
@@ -441,10 +430,341 @@ static uintptr_t syz_open_pts(void)
 
 #endif
 
+#if GOOS_freebsd || GOOS_openbsd || GOOS_netbsd
+
+#if SYZ_EXECUTOR || SYZ_TUN_ENABLE
+
+#include <fcntl.h>
+#include <net/if_tun.h>
+#include <sys/types.h>
+
+static int tunfd = -1;
+#define SYZ_TUN_MAX_PACKET_SIZE 1000
+#define MAX_TUN 4
+#define TUN_IFACE "tap%d"
+#define TUN_DEVICE "/dev/tap%d"
+
+#define LOCAL_MAC "aa:aa:aa:aa:aa:aa"
+#define REMOTE_MAC "aa:aa:aa:aa:aa:bb"
+#define LOCAL_IPV4 "172.20.%d.170"
+#define REMOTE_IPV4 "172.20.%d.187"
+#define LOCAL_IPV6 "fe80::%02hxaa"
+#define REMOTE_IPV6 "fe80::%02hxbb"
+
+static void vsnprintf_check(char* str, size_t size, const char* format, va_list args)
+{
+	int rv;
+
+	rv = vsnprintf(str, size, format, args);
+	if (rv < 0)
+		fail("vsnprintf failed");
+	if ((size_t)rv >= size)
+		fail("vsnprintf: string '%s...' doesn't fit into buffer", str);
+}
+
+static void snprintf_check(char* str, size_t size, const char* format, ...)
+{
+	va_list args;
+
+	va_start(args, format);
+	vsnprintf_check(str, size, format, args);
+	va_end(args);
+}
+
+#define COMMAND_MAX_LEN 128
+#define PATH_PREFIX "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
+#define PATH_PREFIX_LEN (sizeof(PATH_PREFIX) - 1)
+
+static void execute_command(bool panic, const char* format, ...)
+{
+	va_list args;
+	char command[PATH_PREFIX_LEN + COMMAND_MAX_LEN];
+	int rv;
+
+	va_start(args, format);
+	memcpy(command, PATH_PREFIX, PATH_PREFIX_LEN);
+	vsnprintf_check(command + PATH_PREFIX_LEN, COMMAND_MAX_LEN, format, args);
+	va_end(args);
+	rv = system(command);
+	if (rv) {
+		if (panic)
+			fail("command '%s' failed: %d", &command[0], rv);
+		debug("command '%s': %d\n", &command[0], rv);
+	}
+}
+
+static void initialize_tun(int tun_id)
+{
+#if SYZ_EXECUTOR
+	if (!flag_enable_tun)
+		return;
+#endif
+
+	if (tun_id < 0 || tun_id >= MAX_TUN) {
+		fail("tun_id out of range %d\n", tun_id);
+	}
+
+	char tun_device[sizeof(TUN_DEVICE)];
+	snprintf_check(tun_device, sizeof(tun_device), TUN_DEVICE, tun_id);
+
+	char tun_iface[sizeof(TUN_IFACE)];
+	snprintf_check(tun_iface, sizeof(tun_iface), TUN_IFACE, tun_id);
+
+#if GOOS_netbsd
+	execute_command(0, "ifconfig %s destroy", tun_iface);
+	execute_command(0, "ifconfig %s create", tun_iface);
+#else
+	execute_command(0, "ifconfig %s destroy", tun_device);
+#endif
+
+	tunfd = open(tun_device, O_RDWR | O_NONBLOCK);
+#if GOOS_freebsd
+	if ((tunfd < 0) && (errno == ENOENT)) {
+		execute_command(0, "kldload -q if_tap");
+		tunfd = open(tun_device, O_RDWR | O_NONBLOCK);
+	}
+#endif
+	if (tunfd == -1) {
+#if SYZ_EXECUTOR
+		fail("tun: can't open %s\n", tun_device);
+#else
+		printf("tun: can't open %s: errno=%d\n", tun_device, errno);
+		return;
+#endif
+	}
+	const int kTunFd = 240;
+	if (dup2(tunfd, kTunFd) < 0)
+		fail("dup2(tunfd, kTunFd) failed");
+	close(tunfd);
+	tunfd = kTunFd;
+
+	char local_mac[sizeof(LOCAL_MAC)];
+	snprintf_check(local_mac, sizeof(local_mac), LOCAL_MAC);
+#if GOOS_openbsd
+	execute_command(1, "ifconfig %s lladdr %s", tun_iface, local_mac);
+#elif GOOS_netbsd
+	execute_command(1, "ifconfig %s link %s", tun_iface, local_mac);
+#else
+	execute_command(1, "ifconfig %s ether %s", tun_iface, local_mac);
+#endif
+	char local_ipv4[sizeof(LOCAL_IPV4)];
+	snprintf_check(local_ipv4, sizeof(local_ipv4), LOCAL_IPV4, tun_id);
+	execute_command(1, "ifconfig %s inet %s netmask 255.255.255.0", tun_iface, local_ipv4);
+	char remote_mac[sizeof(REMOTE_MAC)];
+	char remote_ipv4[sizeof(REMOTE_IPV4)];
+	snprintf_check(remote_mac, sizeof(remote_mac), REMOTE_MAC);
+	snprintf_check(remote_ipv4, sizeof(remote_ipv4), REMOTE_IPV4, tun_id);
+	execute_command(0, "arp -s %s %s", remote_ipv4, remote_mac);
+	char local_ipv6[sizeof(LOCAL_IPV6)];
+	snprintf_check(local_ipv6, sizeof(local_ipv6), LOCAL_IPV6, tun_id);
+	execute_command(1, "ifconfig %s inet6 %s", tun_iface, local_ipv6);
+	char remote_ipv6[sizeof(REMOTE_IPV6)];
+	snprintf_check(remote_ipv6, sizeof(remote_ipv6), REMOTE_IPV6, tun_id);
+	execute_command(0, "ndp -s %s%%%s %s", remote_ipv6, tun_iface, remote_mac);
+}
+
+#endif
+
+#if SYZ_EXECUTOR || __NR_syz_emit_ethernet && SYZ_TUN_ENABLE
+#include <stdbool.h>
+#include <sys/uio.h>
+
+static long syz_emit_ethernet(volatile long a0, volatile long a1)
+{
+	if (tunfd < 0)
+		return (uintptr_t)-1;
+
+	size_t length = a0;
+	const char* data = (char*)a1;
+	debug_dump_data(data, length);
+
+	return write(tunfd, data, length);
+}
+#endif
+
+#if SYZ_EXECUTOR || SYZ_TUN_ENABLE && (__NR_syz_extract_tcp_res || SYZ_REPEAT)
+#include <errno.h>
+
+static int read_tun(char* data, int size)
+{
+	if (tunfd < 0)
+		return -1;
+
+	int rv = read(tunfd, data, size);
+	if (rv < 0) {
+		if (errno == EAGAIN)
+			return -1;
+		fail("tun: read failed with %d", rv);
+	}
+	return rv;
+}
+#endif
+
+#if SYZ_EXECUTOR || __NR_syz_extract_tcp_res && SYZ_TUN_ENABLE
+
+struct tcp_resources {
+	uint32 seq;
+	uint32 ack;
+};
+
+#if GOOS_freebsd
+#include <net/ethernet.h>
+#else
+#include <net/ethertypes.h>
+#endif
+#include <net/if.h>
+#include <net/if_arp.h>
+#include <netinet/in.h>
+#include <netinet/ip.h>
+#include <netinet/ip6.h>
+#include <netinet/tcp.h>
+#include <netinet/if_ether.h>
+
+static long syz_extract_tcp_res(volatile long a0, volatile long a1, volatile long a2)
+{
+
+	if (tunfd < 0)
+		return (uintptr_t)-1;
+
+	char data[SYZ_TUN_MAX_PACKET_SIZE];
+	int rv = read_tun(&data[0], sizeof(data));
+	if (rv == -1)
+		return (uintptr_t)-1;
+	size_t length = rv;
+	debug_dump_data(data, length);
+
+	struct tcphdr* tcphdr;
+
+	if (length < sizeof(struct ether_header))
+		return (uintptr_t)-1;
+	struct ether_header* ethhdr = (struct ether_header*)&data[0];
+
+	if (ethhdr->ether_type == htons(ETHERTYPE_IP)) {
+		if (length < sizeof(struct ether_header) + sizeof(struct ip))
+			return (uintptr_t)-1;
+		struct ip* iphdr = (struct ip*)&data[sizeof(struct ether_header)];
+		if (iphdr->ip_p != IPPROTO_TCP)
+			return (uintptr_t)-1;
+		if (length < sizeof(struct ether_header) + iphdr->ip_hl * 4 + sizeof(struct tcphdr))
+			return (uintptr_t)-1;
+		tcphdr = (struct tcphdr*)&data[sizeof(struct ether_header) + iphdr->ip_hl * 4];
+	} else {
+		if (length < sizeof(struct ether_header) + sizeof(struct ip6_hdr))
+			return (uintptr_t)-1;
+		struct ip6_hdr* ipv6hdr = (struct ip6_hdr*)&data[sizeof(struct ether_header)];
+		if (ipv6hdr->ip6_nxt != IPPROTO_TCP)
+			return (uintptr_t)-1;
+		if (length < sizeof(struct ether_header) + sizeof(struct ip6_hdr) + sizeof(struct tcphdr))
+			return (uintptr_t)-1;
+		tcphdr = (struct tcphdr*)&data[sizeof(struct ether_header) + sizeof(struct ip6_hdr)];
+	}
+
+	struct tcp_resources* res = (struct tcp_resources*)a0;
+	NONFAILING(res->seq = htonl((ntohl(tcphdr->th_seq) + (uint32)a1)));
+	NONFAILING(res->ack = htonl((ntohl(tcphdr->th_ack) + (uint32)a2)));
+
+	debug("extracted seq: %08x\n", res->seq);
+	debug("extracted ack: %08x\n", res->ack);
+
+	return 0;
+}
+#endif
+#endif
+
+#if SYZ_EXECUTOR || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NONE
+
+#include <sys/resource.h>
+#include <unistd.h>
+
+static void sandbox_common()
+{
+	if (setsid() == -1)
+		fail("setsid failed");
+	struct rlimit rlim;
+#ifdef GOOS_freebsd
+	rlim.rlim_cur = rlim.rlim_max = 128 << 20;
+	setrlimit(RLIMIT_AS, &rlim);
+#endif
+	rlim.rlim_cur = rlim.rlim_max = 8 << 20;
+	setrlimit(RLIMIT_MEMLOCK, &rlim);
+	rlim.rlim_cur = rlim.rlim_max = 1 << 20;
+	setrlimit(RLIMIT_FSIZE, &rlim);
+	rlim.rlim_cur = rlim.rlim_max = 1 << 20;
+	setrlimit(RLIMIT_STACK, &rlim);
+	rlim.rlim_cur = rlim.rlim_max = 0;
+	setrlimit(RLIMIT_CORE, &rlim);
+	rlim.rlim_cur = rlim.rlim_max = 256;
+	setrlimit(RLIMIT_NOFILE, &rlim);
+}
+#endif
+
+#if SYZ_EXECUTOR || SYZ_SANDBOX_NONE
+
+static void loop();
+
+static int do_sandbox_none(void)
+{
+	sandbox_common();
+#if (GOOS_freebsd || GOOS_openbsd || GOOS_netbsd) && (SYZ_EXECUTOR || SYZ_TUN_ENABLE)
+	initialize_tun(procid);
+#endif
+	loop();
+	return 0;
+}
+#endif
+
+#if SYZ_EXECUTOR || SYZ_SANDBOX_SETUID
+
+#include <sys/resource.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static void loop();
+
+static int wait_for_loop(int pid)
+{
+	if (pid < 0)
+		fail("sandbox fork failed");
+	debug("spawned loop pid %d\n", pid);
+	int status = 0;
+	while (waitpid(-1, &status, WUNTRACED) != pid) {
+	}
+	return WEXITSTATUS(status);
+}
+
+#define SYZ_HAVE_SANDBOX_SETUID 1
+static int do_sandbox_setuid(void)
+{
+	int pid = fork();
+	if (pid != 0)
+		return wait_for_loop(pid);
+
+	sandbox_common();
+#if (GOOS_freebsd || GOOS_openbsd || GOOS_netbsd) && (SYZ_EXECUTOR || SYZ_TUN_ENABLE)
+	initialize_tun(procid);
+#endif
+
+	char pwbuf[1024];
+	struct passwd *pw, pwres;
+	if (getpwnam_r("nobody", &pwres, pwbuf, sizeof(pwbuf), &pw) != 0 || !pw)
+		fail("getpwnam_r(\"nobody\") failed");
+
+	if (setgroups(0, NULL))
+		fail("failed to setgroups");
+	if (setgid(pw->pw_gid))
+		fail("failed to setgid");
+	if (setuid(pw->pw_uid))
+		fail("failed to setuid");
+
+	loop();
+	doexit(1);
+}
+#endif
+
 #elif GOOS_fuchsia
 
 #include <fcntl.h>
-#include <lib/fdio/util.h>
+#include <lib/fdio/directory.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -524,9 +844,9 @@ static void* ex_handler(void* arg)
 				debug("zx_thread_write_state failed: %d\n", status);
 			}
 		}
-		status = zx_task_resume(thread, ZX_RESUME_EXCEPTION);
+		status = zx_task_resume_from_exception(thread, port, 0);
 		if (status != ZX_OK) {
-			debug("zx_task_resume failed: %d\n", status);
+			debug("zx_task_resume_from_exception failed: %d\n", status);
 		}
 		zx_handle_close(thread);
 	}
@@ -614,12 +934,16 @@ long syz_mmap(size_t addr, size_t size)
 		fail("zx_object_get_info(ZX_INFO_VMAR) failed: %d", status);
 	zx_handle_t vmo;
 	status = zx_vmo_create(size, 0, &vmo);
+	if (status != ZX_OK) {
+		debug("zx_vmo_create failed with: %d\n", status);
+		return status;
+	}
+	status = zx_vmo_replace_as_executable(vmo, ZX_HANDLE_INVALID, &vmo);
 	if (status != ZX_OK)
 		return status;
 	uintptr_t mapped_addr;
-	status = zx_vmar_map(root, addr - info.base, vmo, 0, size,
-			     ZX_VM_FLAG_SPECIFIC_OVERWRITE | ZX_VM_FLAG_PERM_READ |
-				 ZX_VM_FLAG_PERM_WRITE | ZX_VM_FLAG_PERM_EXECUTE,
+	status = zx_vmar_map(root, ZX_VM_FLAG_SPECIFIC_OVERWRITE | ZX_VM_FLAG_PERM_READ | ZX_VM_FLAG_PERM_WRITE | ZX_VM_FLAG_PERM_EXECUTE,
+			     addr - info.base, vmo, 0, size,
 			     &mapped_addr);
 	return status;
 }
@@ -654,16 +978,19 @@ static long syz_job_default(void)
 #endif
 
 #if SYZ_EXECUTOR || __NR_syz_future_time
-static long syz_future_time(long when)
+static long syz_future_time(volatile long when)
 {
 	zx_time_t delta_ms;
 	switch (when) {
 	case 0:
 		delta_ms = 5;
+		break;
 	case 1:
 		delta_ms = 30;
+		break;
 	default:
 		delta_ms = 10000;
+		break;
 	}
 	zx_time_t now = zx_clock_get(ZX_CLOCK_MONOTONIC);
 	return now + delta_ms * 1000 * 1000;
@@ -678,11 +1005,6 @@ static int do_sandbox_none(void)
 	return 0;
 }
 #endif
-
-#if SYZ_EXECUTOR
-#define do_sandbox_setuid() 0
-#define do_sandbox_namespace() 0
-#endif
 #define CAST(f) ({void* p = (void*)f; p; })
 
 #elif GOOS_linux
@@ -693,6 +1015,7 @@ static int do_sandbox_none(void)
 #include <unistd.h>
 
 #if SYZ_EXECUTOR
+const int kExtraCoverSize = 256 << 10;
 struct cover_t;
 static void cover_reset(cover_t* cov);
 #endif
@@ -753,59 +1076,261 @@ static int event_timedwait(event_t* ev, uint64 timeout)
 }
 #endif
 
-#if SYZ_EXECUTOR || SYZ_TUN_ENABLE || SYZ_ENABLE_NETDEV
+#if SYZ_EXECUTOR || SYZ_REPEAT || SYZ_TUN_ENABLE || SYZ_FAULT_INJECTION || SYZ_SANDBOX_NONE || \
+    SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE || SYZ_SANDBOX_ANDROID_UNTRUSTED_APP ||        \
+    SYZ_FAULT_INJECTION || SYZ_ENABLE_LEAK || SYZ_ENABLE_BINFMT_MISC
+#include <errno.h>
+#include <fcntl.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
-static void vsnprintf_check(char* str, size_t size, const char* format, va_list args)
+static bool write_file(const char* file, const char* what, ...)
 {
-	int rv;
-
-	rv = vsnprintf(str, size, format, args);
-	if (rv < 0)
-		fail("tun: snprintf failed");
-	if ((size_t)rv >= size)
-		fail("tun: string '%s...' doesn't fit into buffer", str);
-}
-
-#define COMMAND_MAX_LEN 128
-#define PATH_PREFIX "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin "
-#define PATH_PREFIX_LEN (sizeof(PATH_PREFIX) - 1)
-
-static void execute_command(bool panic, const char* format, ...)
-{
+	char buf[1024];
 	va_list args;
-	char command[PATH_PREFIX_LEN + COMMAND_MAX_LEN];
-	int rv;
-
-	va_start(args, format);
-	memcpy(command, PATH_PREFIX, PATH_PREFIX_LEN);
-	vsnprintf_check(command + PATH_PREFIX_LEN, COMMAND_MAX_LEN, format, args);
+	va_start(args, what);
+	vsnprintf(buf, sizeof(buf), what, args);
 	va_end(args);
-	rv = system(command);
-	if (rv) {
-		if (panic)
-			fail("command '%s' failed: %d", &command[0], rv);
-		debug("command '%s': %d\n", &command[0], rv);
+	buf[sizeof(buf) - 1] = 0;
+	int len = strlen(buf);
+
+	int fd = open(file, O_WRONLY | O_CLOEXEC);
+	if (fd == -1)
+		return false;
+	if (write(fd, buf, len) != len) {
+		int err = errno;
+		close(fd);
+		debug("write(%s) failed: %d\n", file, err);
+		errno = err;
+		return false;
 	}
+	close(fd);
+	return true;
 }
+#endif
+
+#if SYZ_EXECUTOR || SYZ_ENABLE_NETDEV || SYZ_TUN_ENABLE
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <netinet/in.h>
+#include <string.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+
+#include <linux/if_addr.h>
+#include <linux/if_link.h>
+#include <linux/in6.h>
+#include <linux/neighbour.h>
+#include <linux/net.h>
+#include <linux/netlink.h>
+#include <linux/rtnetlink.h>
+#include <linux/veth.h>
+
+static struct {
+	char* pos;
+	int nesting;
+	struct nlattr* nested[8];
+	char buf[1024];
+} nlmsg;
+
+static void netlink_init(int typ, int flags, const void* data, int size)
+{
+	memset(&nlmsg, 0, sizeof(nlmsg));
+	struct nlmsghdr* hdr = (struct nlmsghdr*)nlmsg.buf;
+	hdr->nlmsg_type = typ;
+	hdr->nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | flags;
+	memcpy(hdr + 1, data, size);
+	nlmsg.pos = (char*)(hdr + 1) + NLMSG_ALIGN(size);
+}
+
+static void netlink_attr(int typ, const void* data, int size)
+{
+	struct nlattr* attr = (struct nlattr*)nlmsg.pos;
+	attr->nla_len = sizeof(*attr) + size;
+	attr->nla_type = typ;
+	memcpy(attr + 1, data, size);
+	nlmsg.pos += NLMSG_ALIGN(attr->nla_len);
+}
+
+#if SYZ_EXECUTOR || SYZ_ENABLE_NETDEV
+static void netlink_nest(int typ)
+{
+	struct nlattr* attr = (struct nlattr*)nlmsg.pos;
+	attr->nla_type = typ;
+	nlmsg.pos += sizeof(*attr);
+	nlmsg.nested[nlmsg.nesting++] = attr;
+}
+
+static void netlink_done(void)
+{
+	struct nlattr* attr = nlmsg.nested[--nlmsg.nesting];
+	attr->nla_len = nlmsg.pos - (char*)attr;
+}
+#endif
+
+static int netlink_send(int sock)
+{
+	if (nlmsg.pos > nlmsg.buf + sizeof(nlmsg.buf) || nlmsg.nesting)
+		fail("nlmsg overflow/bad nesting");
+	struct nlmsghdr* hdr = (struct nlmsghdr*)nlmsg.buf;
+	hdr->nlmsg_len = nlmsg.pos - nlmsg.buf;
+	struct sockaddr_nl addr;
+	memset(&addr, 0, sizeof(addr));
+	addr.nl_family = AF_NETLINK;
+	unsigned n = sendto(sock, nlmsg.buf, hdr->nlmsg_len, 0, (struct sockaddr*)&addr, sizeof(addr));
+	if (n != hdr->nlmsg_len)
+		fail("short netlink write: %d/%d", n, hdr->nlmsg_len);
+	n = recv(sock, nlmsg.buf, sizeof(nlmsg.buf), 0);
+	if (n < sizeof(struct nlmsghdr) + sizeof(struct nlmsgerr))
+		fail("short netlink read: %d", n);
+	if (hdr->nlmsg_type != NLMSG_ERROR)
+		fail("short netlink ack: %d", hdr->nlmsg_type);
+	return -((struct nlmsgerr*)(hdr + 1))->error;
+}
+
+#if SYZ_EXECUTOR || SYZ_ENABLE_NETDEV
+static void netlink_add_device_impl(const char* type, const char* name)
+{
+	struct ifinfomsg hdr;
+	memset(&hdr, 0, sizeof(hdr));
+	netlink_init(RTM_NEWLINK, NLM_F_EXCL | NLM_F_CREATE, &hdr, sizeof(hdr));
+	if (name)
+		netlink_attr(IFLA_IFNAME, name, strlen(name));
+	netlink_nest(IFLA_LINKINFO);
+	netlink_attr(IFLA_INFO_KIND, type, strlen(type));
+}
+
+static void netlink_add_device(int sock, const char* type, const char* name)
+{
+	netlink_add_device_impl(type, name);
+	netlink_done();
+	int err = netlink_send(sock);
+	debug("netlink: adding device %s type %s: %s\n", name, type, strerror(err));
+	(void)err;
+}
+
+static void netlink_add_veth(int sock, const char* name, const char* peer)
+{
+	netlink_add_device_impl("veth", name);
+	netlink_nest(IFLA_INFO_DATA);
+	netlink_nest(VETH_INFO_PEER);
+	nlmsg.pos += sizeof(struct ifinfomsg);
+	netlink_attr(IFLA_IFNAME, peer, strlen(peer));
+	netlink_done();
+	netlink_done();
+	netlink_done();
+	int err = netlink_send(sock);
+	debug("netlink: adding device %s type veth peer %s: %s\n", name, peer, strerror(err));
+	(void)err;
+}
+
+static void netlink_add_hsr(int sock, const char* name, const char* slave1, const char* slave2)
+{
+	netlink_add_device_impl("hsr", name);
+	netlink_nest(IFLA_INFO_DATA);
+	int ifindex1 = if_nametoindex(slave1);
+	netlink_attr(IFLA_HSR_SLAVE1, &ifindex1, sizeof(ifindex1));
+	int ifindex2 = if_nametoindex(slave2);
+	netlink_attr(IFLA_HSR_SLAVE2, &ifindex2, sizeof(ifindex2));
+	netlink_done();
+	netlink_done();
+	int err = netlink_send(sock);
+	debug("netlink: adding device %s type hsr slave1 %s slave2 %s: %s\n",
+	      name, slave1, slave2, strerror(err));
+	(void)err;
+}
+#endif
+
+static void netlink_device_change(int sock, const char* name, bool up,
+				  const char* master, const void* mac, int macsize)
+{
+	struct ifinfomsg hdr;
+	memset(&hdr, 0, sizeof(hdr));
+	if (up)
+		hdr.ifi_flags = hdr.ifi_change = IFF_UP;
+	netlink_init(RTM_NEWLINK, 0, &hdr, sizeof(hdr));
+	netlink_attr(IFLA_IFNAME, name, strlen(name));
+	if (master) {
+		int ifindex = if_nametoindex(master);
+		netlink_attr(IFLA_MASTER, &ifindex, sizeof(ifindex));
+	}
+	if (macsize)
+		netlink_attr(IFLA_ADDRESS, mac, macsize);
+	int err = netlink_send(sock);
+	debug("netlink: device %s up master %s: %s\n", name, master, strerror(err));
+	(void)err;
+}
+
+static int netlink_add_addr(int sock, const char* dev, const void* addr, int addrsize)
+{
+	struct ifaddrmsg hdr;
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.ifa_family = addrsize == 4 ? AF_INET : AF_INET6;
+	hdr.ifa_prefixlen = addrsize == 4 ? 24 : 120;
+	hdr.ifa_scope = RT_SCOPE_UNIVERSE;
+	hdr.ifa_index = if_nametoindex(dev);
+	netlink_init(RTM_NEWADDR, NLM_F_CREATE | NLM_F_REPLACE, &hdr, sizeof(hdr));
+	netlink_attr(IFA_LOCAL, addr, addrsize);
+	netlink_attr(IFA_ADDRESS, addr, addrsize);
+	return netlink_send(sock);
+}
+
+static void netlink_add_addr4(int sock, const char* dev, const char* addr)
+{
+	struct in_addr in_addr;
+	inet_pton(AF_INET, addr, &in_addr);
+	int err = netlink_add_addr(sock, dev, &in_addr, sizeof(in_addr));
+	debug("netlink: add addr %s dev %s: %s\n", addr, dev, strerror(err));
+	(void)err;
+}
+
+static void netlink_add_addr6(int sock, const char* dev, const char* addr)
+{
+	struct in6_addr in6_addr;
+	inet_pton(AF_INET6, addr, &in6_addr);
+	int err = netlink_add_addr(sock, dev, &in6_addr, sizeof(in6_addr));
+	debug("netlink: add addr %s dev %s: %s\n", addr, dev, strerror(err));
+	(void)err;
+}
+
+#if SYZ_EXECUTOR || SYZ_TUN_ENABLE
+static void netlink_add_neigh(int sock, const char* name,
+			      const void* addr, int addrsize, const void* mac, int macsize)
+{
+	struct ndmsg hdr;
+	memset(&hdr, 0, sizeof(hdr));
+	hdr.ndm_family = addrsize == 4 ? AF_INET : AF_INET6;
+	hdr.ndm_ifindex = if_nametoindex(name);
+	hdr.ndm_state = NUD_PERMANENT;
+	netlink_init(RTM_NEWNEIGH, NLM_F_EXCL | NLM_F_CREATE, &hdr, sizeof(hdr));
+	netlink_attr(NDA_DST, addr, addrsize);
+	netlink_attr(NDA_LLADDR, mac, macsize);
+	int err = netlink_send(sock);
+	debug("netlink: add neigh %s addr %d lladdr %d: %s\n",
+	      name, addrsize, macsize, strerror(err));
+	(void)err;
+}
+#endif
 #endif
 
 #if SYZ_EXECUTOR || SYZ_TUN_ENABLE
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/if.h>
-#include <linux/if_ether.h>
-#include <linux/if_tun.h>
-#include <linux/ip.h>
-#include <linux/tcp.h>
+#include <net/if.h>
 #include <net/if_arp.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+
+#include <linux/if_ether.h>
+#include <linux/if_tun.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
 
 static int tunfd = -1;
 static int tun_frags_enabled;
@@ -813,8 +1338,8 @@ static int tun_frags_enabled;
 
 #define TUN_IFACE "syz_tun"
 
-#define LOCAL_MAC "aa:aa:aa:aa:aa:aa"
-#define REMOTE_MAC "aa:aa:aa:aa:aa:bb"
+#define LOCAL_MAC 0xaaaaaaaaaaaa
+#define REMOTE_MAC 0xaaaaaaaaaabb
 
 #define LOCAL_IPV4 "172.20.20.170"
 #define REMOTE_IPV4 "172.20.20.187"
@@ -838,7 +1363,7 @@ static void initialize_tun(void)
 	tunfd = open("/dev/net/tun", O_RDWR | O_NONBLOCK);
 	if (tunfd == -1) {
 #if SYZ_EXECUTOR
-		fail("tun: can't open /dev/net/tun\n");
+		fail("tun: can't open /dev/net/tun");
 #else
 		printf("tun: can't open /dev/net/tun: please enable CONFIG_TUN=y\n");
 		printf("otherwise fuzzing or reproducing might not work as intended\n");
@@ -864,17 +1389,28 @@ static void initialize_tun(void)
 		fail("tun: ioctl(TUNGETIFF) failed");
 	tun_frags_enabled = (ifr.ifr_flags & IFF_NAPI_FRAGS) != 0;
 	debug("tun_frags_enabled=%d\n", tun_frags_enabled);
-	execute_command(0, "sysctl -w net.ipv6.conf.%s.accept_dad=0", TUN_IFACE);
-	execute_command(0, "sysctl -w net.ipv6.conf.%s.router_solicitations=0", TUN_IFACE);
+	char sysctl[64];
+	sprintf(sysctl, "/proc/sys/net/ipv6/conf/%s/accept_dad", TUN_IFACE);
+	write_file(sysctl, "0");
+	sprintf(sysctl, "/proc/sys/net/ipv6/conf/%s/router_solicitations", TUN_IFACE);
+	write_file(sysctl, "0");
 
-	execute_command(1, "ip link set dev %s address %s", TUN_IFACE, LOCAL_MAC);
-	execute_command(1, "ip addr add %s/24 dev %s", LOCAL_IPV4, TUN_IFACE);
-	execute_command(1, "ip neigh add %s lladdr %s dev %s nud permanent",
-			REMOTE_IPV4, REMOTE_MAC, TUN_IFACE);
-	execute_command(0, "ip -6 addr add %s/120 dev %s", LOCAL_IPV6, TUN_IFACE);
-	execute_command(0, "ip -6 neigh add %s lladdr %s dev %s nud permanent",
-			REMOTE_IPV6, REMOTE_MAC, TUN_IFACE);
-	execute_command(1, "ip link set dev %s up", TUN_IFACE);
+	int sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	if (sock == -1)
+		fail("socket(AF_NETLINK) failed");
+
+	netlink_add_addr4(sock, TUN_IFACE, LOCAL_IPV4);
+	netlink_add_addr6(sock, TUN_IFACE, LOCAL_IPV6);
+	uint64 macaddr = REMOTE_MAC;
+	struct in_addr in_addr;
+	inet_pton(AF_INET, REMOTE_IPV4, &in_addr);
+	netlink_add_neigh(sock, TUN_IFACE, &in_addr, sizeof(in_addr), &macaddr, ETH_ALEN);
+	struct in6_addr in6_addr;
+	inet_pton(AF_INET6, REMOTE_IPV6, &in6_addr);
+	netlink_add_neigh(sock, TUN_IFACE, &in6_addr, sizeof(in6_addr), &macaddr, ETH_ALEN);
+	macaddr = LOCAL_MAC;
+	netlink_device_change(sock, TUN_IFACE, true, 0, &macaddr, ETH_ALEN);
+	close(sock);
 }
 #endif
 
@@ -882,70 +1418,158 @@ static void initialize_tun(void)
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <linux/if.h>
-#include <linux/if_ether.h>
-#include <linux/if_tun.h>
-#include <linux/ip.h>
-#include <linux/tcp.h>
+#include <net/if.h>
 #include <net/if_arp.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
+
+#include <linux/if_ether.h>
+#include <linux/if_tun.h>
+#include <linux/ip.h>
+#include <linux/tcp.h>
 #define DEV_IPV4 "172.20.20.%d"
-#define DEV_IPV6 "fe80::%02hx"
-#define DEV_MAC "aa:aa:aa:aa:aa:%02hx"
-
-static void snprintf_check(char* str, size_t size, const char* format, ...)
-{
-	va_list args;
-
-	va_start(args, format);
-	vsnprintf_check(str, size, format, args);
-	va_end(args);
-}
+#define DEV_IPV6 "fe80::%02x"
+#define DEV_MAC 0x00aaaaaaaaaa
 static void initialize_netdevices(void)
 {
 #if SYZ_EXECUTOR
 	if (!flag_enable_net_dev)
 		return;
 #endif
-	unsigned i;
-	const char* devtypes[] = {"ip6gretap", "bridge", "vcan", "bond", "team"};
-	const char* devnames[] = {"lo", "sit0", "bridge0", "vcan0", "tunl0",
-				  "gre0", "gretap0", "ip_vti0", "ip6_vti0",
-				  "ip6tnl0", "ip6gre0", "ip6gretap0",
-				  "erspan0", "bond0", "veth0", "veth1", "team0",
-				  "veth0_to_bridge", "veth1_to_bridge",
-				  "veth0_to_bond", "veth1_to_bond",
-				  "veth0_to_team", "veth1_to_team"};
+	char netdevsim[16];
+	sprintf(netdevsim, "netdevsim%d", (int)procid);
+	struct {
+		const char* type;
+		const char* dev;
+	} devtypes[] = {
+	    {"ip6gretap", "ip6gretap0"},
+	    {"bridge", "bridge0"},
+	    {"vcan", "vcan0"},
+	    {"bond", "bond0"},
+	    {"team", "team0"},
+	    {"dummy", "dummy0"},
+	    {"nlmon", "nlmon0"},
+	    {"caif", "caif0"},
+	    {"batadv", "batadv0"},
+	    {"vxcan", "vxcan1"},
+	    {"netdevsim", netdevsim},
+	    {"veth", 0},
+	};
 	const char* devmasters[] = {"bridge", "bond", "team"};
-
-	for (i = 0; i < sizeof(devtypes) / (sizeof(devtypes[0])); i++)
-		execute_command(0, "ip link add dev %s0 type %s", devtypes[i], devtypes[i]);
-	execute_command(0, "ip link add type veth");
+	struct {
+		const char* name;
+		int macsize;
+		bool noipv6;
+	} devices[] = {
+	    {"lo", ETH_ALEN},
+	    {"sit0", 0},
+	    {"bridge0", ETH_ALEN},
+	    {"vcan0", 0, true},
+	    {"tunl0", 0},
+	    {"gre0", 0},
+	    {"gretap0", ETH_ALEN},
+	    {"ip_vti0", 0},
+	    {"ip6_vti0", 0},
+	    {"ip6tnl0", 0},
+	    {"ip6gre0", 0},
+	    {"ip6gretap0", ETH_ALEN},
+	    {"erspan0", ETH_ALEN},
+	    {"bond0", ETH_ALEN},
+	    {"veth0", ETH_ALEN},
+	    {"veth1", ETH_ALEN},
+	    {"team0", ETH_ALEN},
+	    {"veth0_to_bridge", ETH_ALEN},
+	    {"veth1_to_bridge", ETH_ALEN},
+	    {"veth0_to_bond", ETH_ALEN},
+	    {"veth1_to_bond", ETH_ALEN},
+	    {"veth0_to_team", ETH_ALEN},
+	    {"veth1_to_team", ETH_ALEN},
+	    {"veth0_to_hsr", ETH_ALEN},
+	    {"veth1_to_hsr", ETH_ALEN},
+	    {"hsr0", 0},
+	    {"dummy0", ETH_ALEN},
+	    {"nlmon0", 0},
+	    {"vxcan1", 0, true},
+	    {"caif0", ETH_ALEN},
+	    {"batadv0", ETH_ALEN},
+	    {netdevsim, ETH_ALEN},
+	};
+	int sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	if (sock == -1)
+		fail("socket(AF_NETLINK) failed");
+	unsigned i;
+	for (i = 0; i < sizeof(devtypes) / sizeof(devtypes[0]); i++)
+		netlink_add_device(sock, devtypes[i].type, devtypes[i].dev);
 	for (i = 0; i < sizeof(devmasters) / (sizeof(devmasters[0])); i++) {
-		execute_command(0, "ip link add name %s_slave_0 type veth peer name veth0_to_%s", devmasters[i], devmasters[i]);
-		execute_command(0, "ip link add name %s_slave_1 type veth peer name veth1_to_%s", devmasters[i], devmasters[i]);
-		execute_command(0, "ip link set %s_slave_0 master %s0", devmasters[i], devmasters[i]);
-		execute_command(0, "ip link set %s_slave_1 master %s0", devmasters[i], devmasters[i]);
-		execute_command(0, "ip link set veth0_to_%s up", devmasters[i]);
-		execute_command(0, "ip link set veth1_to_%s up", devmasters[i]);
+		char master[32], slave0[32], veth0[32], slave1[32], veth1[32];
+		sprintf(slave0, "%s_slave_0", devmasters[i]);
+		sprintf(veth0, "veth0_to_%s", devmasters[i]);
+		netlink_add_veth(sock, slave0, veth0);
+		sprintf(slave1, "%s_slave_1", devmasters[i]);
+		sprintf(veth1, "veth1_to_%s", devmasters[i]);
+		netlink_add_veth(sock, slave1, veth1);
+		sprintf(master, "%s0", devmasters[i]);
+		netlink_device_change(sock, slave0, false, master, 0, 0);
+		netlink_device_change(sock, slave1, false, master, 0, 0);
 	}
-	execute_command(0, "ip link set bridge_slave_0 up");
-	execute_command(0, "ip link set bridge_slave_1 up");
+	netlink_device_change(sock, "bridge_slave_0", true, 0, 0, 0);
+	netlink_device_change(sock, "bridge_slave_1", true, 0, 0, 0);
+	netlink_add_veth(sock, "hsr_slave_0", "veth0_to_hsr");
+	netlink_add_veth(sock, "hsr_slave_1", "veth1_to_hsr");
+	netlink_add_hsr(sock, "hsr0", "hsr_slave_0", "hsr_slave_1");
+	netlink_device_change(sock, "hsr_slave_0", true, 0, 0, 0);
+	netlink_device_change(sock, "hsr_slave_1", true, 0, 0, 0);
 
-	for (i = 0; i < sizeof(devnames) / (sizeof(devnames[0])); i++) {
+	for (i = 0; i < sizeof(devices) / (sizeof(devices[0])); i++) {
 		char addr[32];
-		snprintf_check(addr, sizeof(addr), DEV_IPV4, i + 10);
-		execute_command(0, "ip -4 addr add %s/24 dev %s", addr, devnames[i]);
-		snprintf_check(addr, sizeof(addr), DEV_IPV6, i + 10);
-		execute_command(0, "ip -6 addr add %s/120 dev %s", addr, devnames[i]);
-		snprintf_check(addr, sizeof(addr), DEV_MAC, i + 10);
-		execute_command(0, "ip link set dev %s address %s", devnames[i], addr);
-		execute_command(0, "ip link set dev %s up", devnames[i]);
+		sprintf(addr, DEV_IPV4, i + 10);
+		netlink_add_addr4(sock, devices[i].name, addr);
+		if (!devices[i].noipv6) {
+			sprintf(addr, DEV_IPV6, i + 10);
+			netlink_add_addr6(sock, devices[i].name, addr);
+		}
+		uint64 macaddr = DEV_MAC + ((i + 10ull) << 40);
+		netlink_device_change(sock, devices[i].name, true, 0, &macaddr, devices[i].macsize);
 	}
+	close(sock);
+}
+static void initialize_netdevices_init(void)
+{
+#if SYZ_EXECUTOR
+	if (!flag_enable_net_dev)
+		return;
+#endif
+	int sock = socket(AF_NETLINK, SOCK_RAW, NETLINK_ROUTE);
+	if (sock == -1)
+		fail("socket(AF_NETLINK) failed");
+	struct {
+		const char* type;
+		int macsize;
+		bool noipv6;
+		bool noup;
+	} devtypes[] = {
+	    {"nr", 7, true},
+	    {"rose", 5, true, true},
+	};
+	unsigned i;
+	for (i = 0; i < sizeof(devtypes) / sizeof(devtypes[0]); i++) {
+		char dev[32], addr[32];
+		sprintf(dev, "%s%d", devtypes[i].type, (int)procid);
+		sprintf(addr, "172.30.%d.%d", i, (int)procid + 1);
+		netlink_add_addr4(sock, dev, addr);
+		if (!devtypes[i].noipv6) {
+			sprintf(addr, "fe88::%02x:%02x", i, (int)procid + 1);
+			netlink_add_addr6(sock, dev, addr);
+		}
+		int macsize = devtypes[i].macsize;
+		uint64 macaddr = 0xbbbbbb + ((unsigned long long)i << (8 * (macsize - 2))) +
+				 (procid << (8 * (macsize - 1)));
+		netlink_device_change(sock, dev, !devtypes[i].noup, 0, &macaddr, macsize);
+	}
+	close(sock);
 }
 #endif
 
@@ -980,7 +1604,7 @@ struct vnet_fragmentation {
 	uint32 frags[MAX_FRAGS];
 };
 
-static long syz_emit_ethernet(long a0, long a1, long a2)
+static long syz_emit_ethernet(volatile long a0, volatile long a1, volatile long a2)
 {
 	if (tunfd < 0)
 		return (uintptr_t)-1;
@@ -1058,7 +1682,7 @@ struct tcp_resources {
 	uint32 ack;
 };
 
-static long syz_extract_tcp_res(long a0, long a1, long a2)
+static long syz_extract_tcp_res(volatile long a0, volatile long a1, volatile long a2)
 {
 
 	if (tunfd < 0)
@@ -1108,13 +1732,620 @@ static long syz_extract_tcp_res(long a0, long a1, long a2)
 }
 #endif
 
+#if SYZ_EXECUTOR || __NR_syz_usb_connect
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/usb/ch9.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#define USB_MAX_EP_NUM 32
+
+struct usb_device_index {
+	struct usb_device_descriptor* dev;
+	struct usb_config_descriptor* config;
+	unsigned config_length;
+	struct usb_interface_descriptor* iface;
+	struct usb_endpoint_descriptor* eps[USB_MAX_EP_NUM];
+	unsigned eps_num;
+};
+
+static bool parse_usb_descriptor(char* buffer, size_t length, struct usb_device_index* index)
+{
+	if (length < sizeof(*index->dev) + sizeof(*index->config) + sizeof(*index->iface))
+		return false;
+
+	index->dev = (struct usb_device_descriptor*)buffer;
+	index->config = (struct usb_config_descriptor*)(buffer + sizeof(*index->dev));
+	index->config_length = length - sizeof(*index->dev);
+	index->iface = (struct usb_interface_descriptor*)(buffer + sizeof(*index->dev) + sizeof(*index->config));
+
+	index->eps_num = 0;
+	size_t offset = 0;
+
+	while (true) {
+		if (offset + 1 >= length)
+			break;
+		uint8 desc_length = buffer[offset];
+		uint8 desc_type = buffer[offset + 1];
+		if (desc_length <= 2)
+			break;
+		if (offset + desc_length > length)
+			break;
+		if (desc_type == USB_DT_ENDPOINT) {
+			index->eps[index->eps_num] = (struct usb_endpoint_descriptor*)(buffer + offset);
+			index->eps_num++;
+		}
+		if (index->eps_num == USB_MAX_EP_NUM)
+			break;
+		offset += desc_length;
+	}
+
+	return true;
+}
+
+enum usb_fuzzer_event_type {
+	USB_FUZZER_EVENT_INVALID,
+	USB_FUZZER_EVENT_CONNECT,
+	USB_FUZZER_EVENT_DISCONNECT,
+	USB_FUZZER_EVENT_SUSPEND,
+	USB_FUZZER_EVENT_RESUME,
+	USB_FUZZER_EVENT_CONTROL,
+};
+
+struct usb_fuzzer_event {
+	uint32 type;
+	uint32 length;
+	char data[0];
+};
+
+struct usb_fuzzer_init {
+	uint64 speed;
+	const char* driver_name;
+	const char* device_name;
+};
+
+struct usb_fuzzer_ep_io {
+	uint16 ep;
+	uint16 flags;
+	uint32 length;
+	char data[0];
+};
+
+#define USB_FUZZER_IOCTL_INIT _IOW('U', 0, struct usb_fuzzer_init)
+#define USB_FUZZER_IOCTL_RUN _IO('U', 1)
+#define USB_FUZZER_IOCTL_EVENT_FETCH _IOR('U', 2, struct usb_fuzzer_event)
+#define USB_FUZZER_IOCTL_EP0_WRITE _IOW('U', 3, struct usb_fuzzer_ep_io)
+#define USB_FUZZER_IOCTL_EP0_READ _IOWR('U', 4, struct usb_fuzzer_ep_io)
+#define USB_FUZZER_IOCTL_EP_ENABLE _IOW('U', 5, struct usb_endpoint_descriptor)
+#define USB_FUZZER_IOCTL_EP_WRITE _IOW('U', 7, struct usb_fuzzer_ep_io)
+#define USB_FUZZER_IOCTL_EP_READ _IOWR('U', 8, struct usb_fuzzer_ep_io)
+#define USB_FUZZER_IOCTL_CONFIGURE _IO('U', 9)
+#define USB_FUZZER_IOCTL_VBUS_DRAW _IOW('U', 10, uint32)
+
+int usb_fuzzer_open()
+{
+	return open("/sys/kernel/debug/usb-fuzzer", O_RDWR);
+}
+
+int usb_fuzzer_init(int fd, uint32 speed, const char* driver, const char* device)
+{
+	struct usb_fuzzer_init arg;
+	arg.speed = speed;
+	arg.driver_name = driver;
+	arg.device_name = device;
+	return ioctl(fd, USB_FUZZER_IOCTL_INIT, &arg);
+}
+
+int usb_fuzzer_run(int fd)
+{
+	return ioctl(fd, USB_FUZZER_IOCTL_RUN, 0);
+}
+
+int usb_fuzzer_event_fetch(int fd, struct usb_fuzzer_event* event)
+{
+	return ioctl(fd, USB_FUZZER_IOCTL_EVENT_FETCH, event);
+}
+
+int usb_fuzzer_ep0_write(int fd, struct usb_fuzzer_ep_io* io)
+{
+	return ioctl(fd, USB_FUZZER_IOCTL_EP0_WRITE, io);
+}
+
+int usb_fuzzer_ep0_read(int fd, struct usb_fuzzer_ep_io* io)
+{
+	return ioctl(fd, USB_FUZZER_IOCTL_EP0_READ, io);
+}
+
+int usb_fuzzer_ep_write(int fd, struct usb_fuzzer_ep_io* io)
+{
+	return ioctl(fd, USB_FUZZER_IOCTL_EP_WRITE, io);
+}
+
+int usb_fuzzer_ep_read(int fd, struct usb_fuzzer_ep_io* io)
+{
+	return ioctl(fd, USB_FUZZER_IOCTL_EP_READ, io);
+}
+
+int usb_fuzzer_ep_enable(int fd, struct usb_endpoint_descriptor* desc)
+{
+	return ioctl(fd, USB_FUZZER_IOCTL_EP_ENABLE, desc);
+}
+
+int usb_fuzzer_configure(int fd)
+{
+	return ioctl(fd, USB_FUZZER_IOCTL_CONFIGURE, 0);
+}
+
+int usb_fuzzer_vbus_draw(int fd, uint32 power)
+{
+	return ioctl(fd, USB_FUZZER_IOCTL_VBUS_DRAW, power);
+}
+
+#define USB_MAX_PACKET_SIZE 1024
+
+struct usb_fuzzer_control_event {
+	struct usb_fuzzer_event inner;
+	struct usb_ctrlrequest ctrl;
+	char data[USB_MAX_PACKET_SIZE];
+};
+
+struct usb_fuzzer_ep_io_data {
+	struct usb_fuzzer_ep_io inner;
+	char data[USB_MAX_PACKET_SIZE];
+};
+
+struct vusb_connect_string_descriptor {
+	uint32 len;
+	char* str;
+} __attribute__((packed));
+
+struct vusb_connect_descriptors {
+	uint32 qual_len;
+	char* qual;
+	uint32 bos_len;
+	char* bos;
+	uint32 strs_len;
+	struct vusb_connect_string_descriptor strs[0];
+} __attribute__((packed));
+
+static const char* default_string = "syzkaller";
+
+static bool lookup_connect_response(struct vusb_connect_descriptors* descs, struct usb_device_index* index,
+				    struct usb_ctrlrequest* ctrl, char** response_data, uint32* response_length)
+{
+	uint8 str_idx;
+
+	switch (ctrl->bRequestType & USB_TYPE_MASK) {
+	case USB_TYPE_STANDARD:
+		switch (ctrl->bRequest) {
+		case USB_REQ_GET_DESCRIPTOR:
+			switch (ctrl->wValue >> 8) {
+			case USB_DT_DEVICE:
+				*response_data = (char*)index->dev;
+				*response_length = sizeof(*index->dev);
+				return true;
+			case USB_DT_CONFIG:
+				*response_data = (char*)index->config;
+				*response_length = index->config_length;
+				return true;
+			case USB_DT_STRING:
+				str_idx = (uint8)ctrl->wValue;
+				if (str_idx >= descs->strs_len) {
+					*response_data = (char*)default_string;
+					*response_length = strlen(default_string);
+				} else {
+					*response_data = descs->strs[str_idx].str;
+					*response_length = descs->strs[str_idx].len;
+				}
+				return true;
+			case USB_DT_BOS:
+				*response_data = descs->bos;
+				*response_length = descs->bos_len;
+				return true;
+			case USB_DT_DEVICE_QUALIFIER:
+				*response_data = descs->qual;
+				*response_length = descs->qual_len;
+				return true;
+			default:
+				fail("syz_usb_connect: no response");
+				return false;
+			}
+			break;
+		default:
+			fail("syz_usb_connect: no response");
+			return false;
+		}
+		break;
+	default:
+		fail("syz_usb_connect: no response");
+		return false;
+	}
+
+	return false;
+}
+
+static volatile long syz_usb_connect(volatile long a0, volatile long a1, volatile long a2, volatile long a3)
+{
+	uint64 speed = a0;
+	uint64 dev_len = a1;
+	char* dev = (char*)a2;
+	struct vusb_connect_descriptors* descs = (struct vusb_connect_descriptors*)a3;
+
+	debug("syz_usb_connect: dev: %p\n", dev);
+	if (!dev) {
+		debug("syz_usb_connect: dev is null\n");
+		return -1;
+	}
+
+	debug("syz_usb_connect: device data:\n");
+	debug_dump_data(dev, dev_len);
+
+	struct usb_device_index index;
+	memset(&index, 0, sizeof(index));
+	int rv = 0;
+	NONFAILING(rv = parse_usb_descriptor(dev, dev_len, &index));
+	if (!rv) {
+		debug("syz_usb_connect: parse_usb_descriptor failed with %d\n", rv);
+		return rv;
+	}
+	debug("syz_usb_connect: parsed usb descriptor, %d endpoints found\n", index.eps_num);
+
+	int fd = usb_fuzzer_open();
+	if (fd < 0) {
+		debug("syz_usb_connect: usb_fuzzer_open failed with %d\n", rv);
+		return fd;
+	}
+	debug("syz_usb_connect: usb_fuzzer_open success\n");
+
+	char device[32];
+	sprintf(&device[0], "dummy_udc.%llu", procid);
+	rv = usb_fuzzer_init(fd, speed, "dummy_udc", &device[0]);
+	if (rv < 0) {
+		debug("syz_usb_connect: usb_fuzzer_init failed with %d\n", rv);
+		return rv;
+	}
+	debug("syz_usb_connect: usb_fuzzer_init success\n");
+
+	rv = usb_fuzzer_run(fd);
+	if (rv < 0) {
+		debug("syz_usb_connect: usb_fuzzer_run failed with %d\n", rv);
+		return rv;
+	}
+	debug("syz_usb_connect: usb_fuzzer_run success\n");
+
+	bool done = false;
+	while (!done) {
+		struct usb_fuzzer_control_event event;
+		event.inner.type = 0;
+		event.inner.length = sizeof(event.ctrl);
+		rv = usb_fuzzer_event_fetch(fd, (struct usb_fuzzer_event*)&event);
+		if (rv < 0) {
+			debug("syz_usb_connect: usb_fuzzer_event_fetch failed with %d\n", rv);
+			return rv;
+		}
+		if (event.inner.type != USB_FUZZER_EVENT_CONTROL)
+			continue;
+
+		debug("syz_usb_connect: bRequestType: 0x%x (%s), bRequest: 0x%x, wValue: 0x%x, wIndex: 0x%x, wLength: %d\n",
+		      event.ctrl.bRequestType, (event.ctrl.bRequestType & USB_DIR_IN) ? "IN" : "OUT",
+		      event.ctrl.bRequest, event.ctrl.wValue, event.ctrl.wIndex, event.ctrl.wLength);
+
+		bool response_found = false;
+		char* response_data = NULL;
+		uint32 response_length = 0;
+
+		if (event.ctrl.bRequestType & USB_DIR_IN) {
+			NONFAILING(response_found = lookup_connect_response(descs, &index, &event.ctrl, &response_data, &response_length));
+			if (!response_found) {
+				debug("syz_usb_connect: unknown IN request\n");
+				return -1;
+			}
+		} else {
+			if ((event.ctrl.bRequestType & USB_TYPE_MASK) != USB_TYPE_STANDARD ||
+			    event.ctrl.bRequest != USB_REQ_SET_CONFIGURATION) {
+				fail("syz_usb_connect: unknown OUT request");
+				return -1;
+			}
+			done = true;
+		}
+
+		if (done) {
+			rv = usb_fuzzer_vbus_draw(fd, index.config->bMaxPower);
+			if (rv < 0) {
+				debug("syz_usb_connect: usb_fuzzer_vbus_draw failed with %d\n", rv);
+				return rv;
+			}
+			rv = usb_fuzzer_configure(fd);
+			if (rv < 0) {
+				debug("syz_usb_connect: usb_fuzzer_configure failed with %d\n", rv);
+				return rv;
+			}
+			unsigned ep;
+			for (ep = 0; ep < index.eps_num; ep++) {
+				rv = usb_fuzzer_ep_enable(fd, index.eps[ep]);
+				if (rv < 0) {
+					debug("syz_usb_connect: usb_fuzzer_ep_enable failed with %d\n", rv);
+				} else {
+					debug("syz_usb_connect: endpoint %d enabled\n", ep);
+				}
+			}
+		}
+
+		struct usb_fuzzer_ep_io_data response;
+		response.inner.ep = 0;
+		response.inner.flags = 0;
+		if (response_length > sizeof(response.data))
+			response_length = 0;
+		if (event.ctrl.wLength < response_length)
+			response_length = event.ctrl.wLength;
+		response.inner.length = response_length;
+		if (response_data)
+			memcpy(&response.data[0], response_data, response_length);
+		else
+			memset(&response.data[0], 0, response_length);
+
+		debug("syz_usb_connect: reply length = %d\n", response.inner.length);
+		if (event.ctrl.bRequestType & USB_DIR_IN)
+			rv = usb_fuzzer_ep0_write(fd, (struct usb_fuzzer_ep_io*)&response);
+		else
+			rv = usb_fuzzer_ep0_read(fd, (struct usb_fuzzer_ep_io*)&response);
+		if (rv < 0) {
+			debug("syz_usb_connect: usb_fuzzer_ep0_read/write failed with %d\n", rv);
+			return rv;
+		}
+	}
+
+	sleep_ms(200);
+
+	debug("syz_usb_connect: configured\n");
+
+	return fd;
+}
+
+#if SYZ_EXECUTOR || __NR_syz_usb_control_io
+struct vusb_descriptor {
+	uint8 req_type;
+	uint8 desc_type;
+	uint32 len;
+	char data[0];
+} __attribute__((packed));
+
+struct vusb_descriptors {
+	uint32 len;
+	struct vusb_descriptor* generic;
+	struct vusb_descriptor* descs[0];
+} __attribute__((packed));
+
+struct vusb_response {
+	uint8 type;
+	uint8 req;
+	uint32 len;
+	char data[0];
+} __attribute__((packed));
+
+struct vusb_responses {
+	uint32 len;
+	struct vusb_response* generic;
+	struct vusb_response* resps[0];
+} __attribute__((packed));
+
+static bool lookup_control_io_response(struct vusb_descriptors* descs, struct vusb_responses* resps,
+				       struct usb_ctrlrequest* ctrl, char** response_data, uint32* response_length)
+{
+	int descs_num = (descs->len - offsetof(struct vusb_descriptors, descs)) / sizeof(descs->descs[0]);
+	int resps_num = (resps->len - offsetof(struct vusb_responses, resps)) / sizeof(resps->resps[0]);
+
+	uint8 req = ctrl->bRequest;
+	uint8 req_type = ctrl->bRequestType & USB_TYPE_MASK;
+	uint8 desc_type = ctrl->wValue >> 8;
+
+	if (req == USB_REQ_GET_DESCRIPTOR) {
+		int i;
+
+		for (i = 0; i < descs_num; i++) {
+			struct vusb_descriptor* desc = descs->descs[i];
+			if (!desc)
+				continue;
+			if (desc->req_type == req_type && desc->desc_type == desc_type) {
+				*response_length = desc->len;
+				if (*response_length != 0)
+					*response_data = &desc->data[0];
+				else
+					*response_data = NULL;
+				return true;
+			}
+		}
+
+		if (descs->generic) {
+			*response_data = &descs->generic->data[0];
+			*response_length = descs->generic->len;
+			return true;
+		}
+	} else {
+		int i;
+
+		for (i = 0; i < resps_num; i++) {
+			struct vusb_response* resp = resps->resps[i];
+			if (!resp)
+				continue;
+			if (resp->type == req_type && resp->req == req) {
+				*response_length = resp->len;
+				if (*response_length != 0)
+					*response_data = &resp->data[0];
+				else
+					*response_data = NULL;
+				return true;
+			}
+		}
+
+		if (resps->generic) {
+			*response_data = &resps->generic->data[0];
+			*response_length = resps->generic->len;
+			return true;
+		}
+	}
+
+	return false;
+}
+
+static volatile long syz_usb_control_io(volatile long a0, volatile long a1, volatile long a2)
+{
+	int fd = a0;
+	struct vusb_descriptors* descs = (struct vusb_descriptors*)a1;
+	struct vusb_responses* resps = (struct vusb_responses*)a2;
+
+	struct usb_fuzzer_control_event event;
+	event.inner.type = 0;
+	event.inner.length = USB_MAX_PACKET_SIZE;
+	int rv = usb_fuzzer_event_fetch(fd, (struct usb_fuzzer_event*)&event);
+	if (rv < 0) {
+		debug("syz_usb_control_io: usb_fuzzer_ep0_read failed with %d\n", rv);
+		return rv;
+	}
+	if (event.inner.type != USB_FUZZER_EVENT_CONTROL) {
+		debug("syz_usb_control_io: wrong event type: %d\n", (int)event.inner.type);
+		return -1;
+	}
+
+	debug("syz_usb_control_io: bRequestType: 0x%x (%s), bRequest: 0x%x, wValue: 0x%x, wIndex: 0x%x, wLength: %d\n",
+	      event.ctrl.bRequestType, (event.ctrl.bRequestType & USB_DIR_IN) ? "IN" : "OUT",
+	      event.ctrl.bRequest, event.ctrl.wValue, event.ctrl.wIndex, event.ctrl.wLength);
+
+	bool response_found = false;
+	char* response_data = NULL;
+	uint32 response_length = 0;
+
+	if (event.ctrl.bRequestType & USB_DIR_IN) {
+		NONFAILING(response_found = lookup_control_io_response(descs, resps, &event.ctrl, &response_data, &response_length));
+		if (!response_found) {
+			debug("syz_usb_control_io: no response found\n");
+			return -1;
+		}
+	} else {
+		response_length = event.ctrl.wLength;
+	}
+
+	struct usb_fuzzer_ep_io_data response;
+	response.inner.ep = 0;
+	response.inner.flags = 0;
+	if (response_length > sizeof(response.data))
+		response_length = 0;
+	if (event.ctrl.wLength < response_length)
+		response_length = event.ctrl.wLength;
+	response.inner.length = response_length;
+	if (response_data)
+		memcpy(&response.data[0], response_data, response_length);
+	else
+		memset(&response.data[0], 0, response_length);
+
+	if (event.ctrl.bRequestType & USB_DIR_IN) {
+		debug("syz_usb_control_io: IN, length = %d\n", response.inner.length);
+		debug_dump_data(&response.data[0], response.inner.length);
+		rv = usb_fuzzer_ep0_write(fd, (struct usb_fuzzer_ep_io*)&response);
+	} else {
+		rv = usb_fuzzer_ep0_read(fd, (struct usb_fuzzer_ep_io*)&response);
+		debug("syz_usb_control_io: OUT, length = %d\n", response.inner.length);
+		debug_dump_data(&event.data[0], response.inner.length);
+	}
+	if (rv < 0) {
+		debug("syz_usb_control_io: usb_fuzzer_ep0_read/write failed with %d\n", rv);
+		return rv;
+	}
+
+	sleep_ms(200);
+
+	return 0;
+}
+#endif
+
+#if SYZ_EXECUTOR || __NR_syz_usb_ep_write
+static volatile long syz_usb_ep_write(volatile long a0, volatile long a1, volatile long a2, volatile long a3)
+{
+	int fd = a0;
+	uint16 ep = a1;
+	uint32 len = a2;
+	char* data = (char*)a3;
+
+	struct usb_fuzzer_ep_io_data io_data;
+	io_data.inner.ep = ep;
+	io_data.inner.flags = 0;
+	if (len > sizeof(io_data.data))
+		len = sizeof(io_data.data);
+	io_data.inner.length = len;
+	NONFAILING(memcpy(&io_data.data[0], data, len));
+
+	int rv = usb_fuzzer_ep_write(fd, (struct usb_fuzzer_ep_io*)&io_data);
+	if (rv < 0) {
+		debug("syz_usb_ep_write: usb_fuzzer_ep_write failed with %d\n", rv);
+		return rv;
+	}
+
+	sleep_ms(200);
+
+	return 0;
+}
+#endif
+
+#if SYZ_EXECUTOR || __NR_syz_usb_ep_read
+static volatile long syz_usb_ep_read(volatile long a0, volatile long a1, volatile long a2, volatile long a3)
+{
+	int fd = a0;
+	uint16 ep = a1;
+	uint32 len = a2;
+	char* data = (char*)a3;
+
+	struct usb_fuzzer_ep_io_data io_data;
+	io_data.inner.ep = ep;
+	io_data.inner.flags = 0;
+	if (len > sizeof(io_data.data))
+		len = sizeof(io_data.data);
+	io_data.inner.length = len;
+
+	int rv = usb_fuzzer_ep_read(fd, (struct usb_fuzzer_ep_io*)&io_data);
+	if (rv < 0) {
+		debug("syz_usb_ep_read: usb_fuzzer_ep_read failed with %d\n", rv);
+		return rv;
+	}
+
+	NONFAILING(memcpy(&data[0], &io_data.data[0], io_data.inner.length));
+
+	debug("syz_usb_ep_read: received data:\n");
+	debug_dump_data(&io_data.data[0], io_data.inner.length);
+
+	sleep_ms(200);
+
+	return 0;
+}
+#endif
+
+#if SYZ_EXECUTOR || __NR_syz_usb_disconnect
+static volatile long syz_usb_disconnect(volatile long a0)
+{
+	int fd = a0;
+
+	int rv = close(fd);
+
+	sleep_ms(200);
+
+	return rv;
+}
+#endif
+
+#endif
+
 #if SYZ_EXECUTOR || __NR_syz_open_dev
 #include <fcntl.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
-static long syz_open_dev(long a0, long a1, long a2)
+static long syz_open_dev(volatile long a0, volatile long a1, volatile long a2)
 {
 	if (a0 == 0xc || a0 == 0xb) {
 		char buf[128];
@@ -1140,7 +2371,7 @@ static long syz_open_dev(long a0, long a1, long a2)
 #include <sys/stat.h>
 #include <sys/types.h>
 
-static long syz_open_procfs(long a0, long a1)
+static long syz_open_procfs(volatile long a0, volatile long a1)
 {
 
 	char buf[128];
@@ -1165,7 +2396,7 @@ static long syz_open_procfs(long a0, long a1)
 #include <sys/stat.h>
 #include <sys/types.h>
 
-static long syz_open_pts(long a0, long a1)
+static long syz_open_pts(volatile long a0, volatile long a1)
 {
 	int ptyno = 0;
 	if (ioctl(a0, TIOCGPTN, &ptyno))
@@ -1177,7 +2408,7 @@ static long syz_open_pts(long a0, long a1)
 #endif
 
 #if SYZ_EXECUTOR || __NR_syz_init_net_socket
-#if SYZ_EXECUTOR || SYZ_SANDBOX_NONE || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE
+#if SYZ_EXECUTOR || SYZ_SANDBOX_NONE || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE || SYZ_SANDBOX_ANDROID_UNTRUSTED_APP
 #include <fcntl.h>
 #include <sched.h>
 #include <sys/stat.h>
@@ -1185,7 +2416,7 @@ static long syz_open_pts(long a0, long a1)
 #include <unistd.h>
 
 const int kInitNetNsFd = 239;
-static long syz_init_net_socket(long domain, long type, long proto)
+static long syz_init_net_socket(volatile long domain, volatile long type, volatile long proto)
 {
 	int netns = open("/proc/self/ns/net", O_RDONLY);
 	if (netns == -1)
@@ -1201,7 +2432,7 @@ static long syz_init_net_socket(long domain, long type, long proto)
 	return sock;
 }
 #else
-static long syz_init_net_socket(long domain, long type, long proto)
+static long syz_init_net_socket(volatile long domain, volatile long type, volatile long proto)
 {
 	return syscall(__NR_socket, domain, type, proto);
 }
@@ -1215,7 +2446,7 @@ static long syz_init_net_socket(long domain, long type, long proto)
 #include <sys/socket.h>
 #include <sys/types.h>
 
-static long syz_genetlink_get_family_id(long name)
+static long syz_genetlink_get_family_id(volatile long name)
 {
 	char buf[512] = {0};
 	struct nlmsghdr* hdr = (struct nlmsghdr*)buf;
@@ -1293,7 +2524,7 @@ struct fs_image_segment {
 #endif
 
 #if SYZ_EXECUTOR || __NR_syz_read_part_table
-static long syz_read_part_table(unsigned long size, unsigned long nsegs, long segments)
+static long syz_read_part_table(volatile unsigned long size, volatile unsigned long nsegs, volatile long segments)
 {
 	char loopname[64], linkname[64];
 	int loopfd, err = 0, res = -1;
@@ -1384,7 +2615,7 @@ error:
 #if SYZ_EXECUTOR || __NR_syz_mount_image
 #include <string.h>
 #include <sys/mount.h>
-static long syz_mount_image(long fsarg, long dir, unsigned long size, unsigned long nsegs, long segments, long flags, long optsarg)
+static long syz_mount_image(volatile long fsarg, volatile long dir, volatile unsigned long size, volatile unsigned long nsegs, volatile long segments, volatile long flags, volatile long optsarg)
 {
 	char loopname[64], fs[32], opts[256];
 	int loopfd, err = 0, res = -1;
@@ -1479,12 +2710,11 @@ error:
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 
-#if defined(__x86_64__)
+#if GOARCH_amd64
 const char kvm_asm16_cpl3[] = "\x0f\x20\xc0\x66\x83\xc8\x01\x0f\x22\xc0\xb8\xa0\x00\x0f\x00\xd8\xb8\x2b\x00\x8e\xd8\x8e\xc0\x8e\xe0\x8e\xe8\xbc\x00\x01\xc7\x06\x00\x01\x1d\xba\xc7\x06\x02\x01\x23\x00\xc7\x06\x04\x01\x00\x01\xc7\x06\x06\x01\x2b\x00\xcb";
 const char kvm_asm32_paged[] = "\x0f\x20\xc0\x0d\x00\x00\x00\x80\x0f\x22\xc0";
 const char kvm_asm32_vm86[] = "\x66\xb8\xb8\x00\x0f\x00\xd8\xea\x00\x00\x00\x00\xd0\x00";
 const char kvm_asm32_paged_vm86[] = "\x0f\x20\xc0\x0d\x00\x00\x00\x80\x0f\x22\xc0\x66\xb8\xb8\x00\x0f\x00\xd8\xea\x00\x00\x00\x00\xd0\x00";
-const char kvm_asm64_vm86[] = "\x0f\x20\xc0\x0d\x00\x00\x00\x80\x0f\x22\xc0\x66\xb8\xb8\x00\x0f\x00\xd8\xea\x00\x00\x00\x00\xd0\x00";
 const char kvm_asm64_enable_long[] = "\x0f\x20\xc0\x0d\x00\x00\x00\x80\x0f\x22\xc0\xea\xde\xc0\xad\x0b\x50\x00\x48\xc7\xc0\xd8\x00\x00\x00\x0f\x00\xd8";
 const char kvm_asm64_init_vm[] = "\x0f\x20\xc0\x0d\x00\x00\x00\x80\x0f\x22\xc0\xea\xde\xc0\xad\x0b\x50\x00\x48\xc7\xc0\xd8\x00\x00\x00\x0f\x00\xd8\x48\xc7\xc1\x3a\x00\x00\x00\x0f\x32\x48\x83\xc8\x05\x0f\x30\x0f\x20\xe0\x48\x0d\x00\x20\x00\x00\x0f\x22\xe0\x48\xc7\xc1\x80\x04\x00\x00\x0f\x32\x48\xc7\xc2\x00\x60\x00\x00\x89\x02\x48\xc7\xc2\x00\x70\x00\x00\x89\x02\x48\xc7\xc0\x00\x5f\x00\x00\xf3\x0f\xc7\x30\x48\xc7\xc0\x08\x5f\x00\x00\x66\x0f\xc7\x30\x0f\xc7\x30\x48\xc7\xc1\x81\x04\x00\x00\x0f\x32\x48\x83\xc8\x3f\x48\x21\xd0\x48\xc7\xc2\x00\x40\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x02\x40\x00\x00\x48\xb8\x84\x9e\x99\xf3\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x1e\x40\x00\x00\x48\xc7\xc0\x81\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc1\x83\x04\x00\x00\x0f\x32\x48\x0d\xff\x6f\x03\x00\x48\x21\xd0\x48\xc7\xc2\x0c\x40\x00\x00\x0f\x79\xd0\x48\xc7\xc1\x84\x04\x00\x00\x0f\x32\x48\x0d\xff\x17\x00\x00\x48\x21\xd0\x48\xc7\xc2\x12\x40\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x04\x2c\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x00\x28\x00\x00\x48\xc7\xc0\xff\xff\xff\xff\x0f\x79\xd0\x48\xc7\xc2\x02\x0c\x00\x00\x48\xc7\xc0\x50\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc0\x58\x00\x00\x00\x48\xc7\xc2\x00\x0c\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x04\x0c\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x06\x0c\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x08\x0c\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0a\x0c\x00\x00\x0f\x79\xd0\x48\xc7\xc0\xd8\x00\x00\x00\x48\xc7\xc2\x0c\x0c\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x02\x2c\x00\x00\x48\xc7\xc0\x00\x05\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x00\x4c\x00\x00\x48\xc7\xc0\x50\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x10\x6c\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x12\x6c\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x0f\x20\xc0\x48\xc7\xc2\x00\x6c\x00\x00\x48\x89\xc0\x0f\x79\xd0\x0f\x20\xd8\x48\xc7\xc2\x02\x6c\x00\x00\x48\x89\xc0\x0f\x79\xd0\x0f\x20\xe0\x48\xc7\xc2\x04\x6c\x00\x00\x48\x89\xc0\x0f\x79\xd0\x48\xc7\xc2\x06\x6c\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x08\x6c\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0a\x6c\x00\x00\x48\xc7\xc0\x00\x3a\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0c\x6c\x00\x00\x48\xc7\xc0\x00\x10\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0e\x6c\x00\x00\x48\xc7\xc0\x00\x38\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x14\x6c\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x16\x6c\x00\x00\x48\x8b\x04\x25\x10\x5f\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x00\x00\x00\x00\x48\xc7\xc0\x01\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x02\x00\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x00\x20\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x02\x20\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x04\x20\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x06\x20\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc1\x77\x02\x00\x00\x0f\x32\x48\xc1\xe2\x20\x48\x09\xd0\x48\xc7\xc2\x00\x2c\x00\x00\x48\x89\xc0\x0f\x79\xd0\x48\xc7\xc2\x04\x40\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0a\x40\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0e\x40\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x10\x40\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x16\x40\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x14\x40\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x00\x60\x00\x00\x48\xc7\xc0\xff\xff\xff\xff\x0f\x79\xd0\x48\xc7\xc2\x02\x60\x00\x00\x48\xc7\xc0\xff\xff\xff\xff\x0f\x79\xd0\x48\xc7\xc2\x1c\x20\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x1e\x20\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x20\x20\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x22\x20\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x00\x08\x00\x00\x48\xc7\xc0\x58\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x02\x08\x00\x00\x48\xc7\xc0\x50\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x04\x08\x00\x00\x48\xc7\xc0\x58\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x06\x08\x00\x00\x48\xc7\xc0\x58\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x08\x08\x00\x00\x48\xc7\xc0\x58\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0a\x08\x00\x00\x48\xc7\xc0\x58\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0c\x08\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0e\x08\x00\x00\x48\xc7\xc0\xd8\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x12\x68\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x14\x68\x00\x00\x48\xc7\xc0\x00\x3a\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x16\x68\x00\x00\x48\xc7\xc0\x00\x10\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x18\x68\x00\x00\x48\xc7\xc0\x00\x38\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x00\x48\x00\x00\x48\xc7\xc0\xff\xff\x0f\x00\x0f\x79\xd0\x48\xc7\xc2\x02\x48\x00\x00\x48\xc7\xc0\xff\xff\x0f\x00\x0f\x79\xd0\x48\xc7\xc2\x04\x48\x00\x00\x48\xc7\xc0\xff\xff\x0f\x00\x0f\x79\xd0\x48\xc7\xc2\x06\x48\x00\x00\x48\xc7\xc0\xff\xff\x0f\x00\x0f\x79\xd0\x48\xc7\xc2\x08\x48\x00\x00\x48\xc7\xc0\xff\xff\x0f\x00\x0f\x79\xd0\x48\xc7\xc2\x0a\x48\x00\x00\x48\xc7\xc0\xff\xff\x0f\x00\x0f\x79\xd0\x48\xc7\xc2\x0c\x48\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0e\x48\x00\x00\x48\xc7\xc0\xff\x1f\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x10\x48\x00\x00\x48\xc7\xc0\xff\x1f\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x12\x48\x00\x00\x48\xc7\xc0\xff\x1f\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x14\x48\x00\x00\x48\xc7\xc0\x93\x40\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x16\x48\x00\x00\x48\xc7\xc0\x9b\x20\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x18\x48\x00\x00\x48\xc7\xc0\x93\x40\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x1a\x48\x00\x00\x48\xc7\xc0\x93\x40\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x1c\x48\x00\x00\x48\xc7\xc0\x93\x40\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x1e\x48\x00\x00\x48\xc7\xc0\x93\x40\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x20\x48\x00\x00\x48\xc7\xc0\x82\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x22\x48\x00\x00\x48\xc7\xc0\x8b\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x1c\x68\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x1e\x68\x00\x00\x48\xc7\xc0\x00\x91\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x20\x68\x00\x00\x48\xc7\xc0\x02\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x06\x28\x00\x00\x48\xc7\xc0\x00\x05\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0a\x28\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0c\x28\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x0e\x28\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x48\xc7\xc2\x10\x28\x00\x00\x48\xc7\xc0\x00\x00\x00\x00\x0f\x79\xd0\x0f\x20\xc0\x48\xc7\xc2\x00\x68\x00\x00\x48\x89\xc0\x0f\x79\xd0\x0f\x20\xd8\x48\xc7\xc2\x02\x68\x00\x00\x48\x89\xc0\x0f\x79\xd0\x0f\x20\xe0\x48\xc7\xc2\x04\x68\x00\x00\x48\x89\xc0\x0f\x79\xd0\x48\xc7\xc0\x18\x5f\x00\x00\x48\x8b\x10\x48\xc7\xc0\x20\x5f\x00\x00\x48\x8b\x08\x48\x31\xc0\x0f\x78\xd0\x48\x31\xc8\x0f\x79\xd0\x0f\x01\xc2\x48\xc7\xc2\x00\x44\x00\x00\x0f\x78\xd0\xf4";
 const char kvm_asm64_vm_exit[] = "\x48\xc7\xc3\x00\x44\x00\x00\x0f\x78\xda\x48\xc7\xc3\x02\x44\x00\x00\x0f\x78\xd9\x48\xc7\xc0\x00\x64\x00\x00\x0f\x78\xc0\x48\xc7\xc3\x1e\x68\x00\x00\x0f\x78\xdb\xf4";
@@ -1813,7 +3043,7 @@ struct kvm_opt {
 #define KVM_SETUP_VIRT86 (1 << 4)
 #define KVM_SETUP_SMM (1 << 5)
 #define KVM_SETUP_VM (1 << 6)
-static uintptr_t syz_kvm_setup_cpu(uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7)
+static long syz_kvm_setup_cpu(volatile long a0, volatile long a1, volatile long a2, volatile long a3, volatile long a4, volatile long a5, volatile long a6, volatile long a7)
 {
 	const int vmfd = a0;
 	const int cpufd = a1;
@@ -2351,7 +3581,7 @@ static uintptr_t syz_kvm_setup_cpu(uintptr_t a0, uintptr_t a1, uintptr_t a2, uin
 	return 0;
 }
 
-#elif defined(__aarch64__)
+#elif GOARCH_arm64
 
 struct kvm_text {
 	uintptr_t typ;
@@ -2363,7 +3593,7 @@ struct kvm_opt {
 	uint64 typ;
 	uint64 val;
 };
-static uintptr_t syz_kvm_setup_cpu(uintptr_t a0, uintptr_t a1, uintptr_t a2, uintptr_t a3, uintptr_t a4, uintptr_t a5, uintptr_t a6, uintptr_t a7)
+static long syz_kvm_setup_cpu(volatile long a0, volatile long a1, volatile long a2, volatile long a3, volatile long a4, volatile long a5, volatile long a6, volatile long a7)
 {
 	const int vmfd = a0;
 	const int cpufd = a1;
@@ -2430,52 +3660,21 @@ static uintptr_t syz_kvm_setup_cpu(uintptr_t a0, uintptr_t a1, uintptr_t a2, uin
 }
 
 #else
-static long syz_kvm_setup_cpu(long a0, long a1, long a2, long a3, long a4, long a5, long a6, long a7)
+static long syz_kvm_setup_cpu(volatile long a0, volatile long a1, volatile long a2, volatile long a3, volatile long a4, volatile long a5, volatile long a6, volatile long a7)
 {
 	return 0;
 }
 #endif
 #endif
 
-#if SYZ_EXECUTOR || SYZ_FAULT_INJECTION || SYZ_SANDBOX_NAMESPACE || SYZ_ENABLE_CGROUPS
-#include <errno.h>
-#include <fcntl.h>
-#include <stdarg.h>
-#include <stdbool.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-
-static bool write_file(const char* file, const char* what, ...)
-{
-	char buf[1024];
-	va_list args;
-	va_start(args, what);
-	vsnprintf(buf, sizeof(buf), what, args);
-	va_end(args);
-	buf[sizeof(buf) - 1] = 0;
-	int len = strlen(buf);
-
-	int fd = open(file, O_WRONLY | O_CLOEXEC);
-	if (fd == -1)
-		return false;
-	if (write(fd, buf, len) != len) {
-		int err = errno;
-		close(fd);
-		errno = err;
-		return false;
-	}
-	close(fd);
-	return true;
-}
-#endif
-
 #if SYZ_EXECUTOR || SYZ_RESET_NET_NAMESPACE
 #include <errno.h>
-#include <linux/net.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <string.h>
 #include <sys/socket.h>
+
+#include <linux/net.h>
 #define XT_TABLE_SIZE 1536
 #define XT_MAX_ENTRIES 10
 
@@ -2784,8 +3983,35 @@ static void reset_arptables()
 	close(fd);
 }
 
-#include <linux/if.h>
-#include <linux/netfilter_bridge/ebtables.h>
+#define NF_BR_NUMHOOKS 6
+#define EBT_TABLE_MAXNAMELEN 32
+#define EBT_CHAIN_MAXNAMELEN 32
+#define EBT_BASE_CTL 128
+#define EBT_SO_SET_ENTRIES (EBT_BASE_CTL)
+#define EBT_SO_GET_INFO (EBT_BASE_CTL)
+#define EBT_SO_GET_ENTRIES (EBT_SO_GET_INFO + 1)
+#define EBT_SO_GET_INIT_INFO (EBT_SO_GET_ENTRIES + 1)
+#define EBT_SO_GET_INIT_ENTRIES (EBT_SO_GET_INIT_INFO + 1)
+
+struct ebt_replace {
+	char name[EBT_TABLE_MAXNAMELEN];
+	unsigned int valid_hooks;
+	unsigned int nentries;
+	unsigned int entries_size;
+	struct ebt_entries* hook_entry[NF_BR_NUMHOOKS];
+	unsigned int num_counters;
+	struct ebt_counter* counters;
+	char* entries;
+};
+
+struct ebt_entries {
+	unsigned int distinguisher;
+	char name[EBT_CHAIN_MAXNAMELEN];
+	unsigned int counter_offset;
+	int policy;
+	unsigned int nentries;
+	char data[0] __attribute__((aligned(__alignof__(struct ebt_replace))));
+};
 
 struct ebt_table_desc {
 	const char* name;
@@ -2899,6 +4125,8 @@ static void reset_ebtables()
 static void checkpoint_net_namespace(void)
 {
 #if SYZ_EXECUTOR
+	if (!flag_enable_net_reset)
+		return;
 	if (flag_sandbox == sandbox_setuid)
 		return;
 #endif
@@ -2911,6 +4139,8 @@ static void checkpoint_net_namespace(void)
 static void reset_net_namespace(void)
 {
 #if SYZ_EXECUTOR
+	if (!flag_enable_net_reset)
+		return;
 	if (flag_sandbox == sandbox_setuid)
 		return;
 #endif
@@ -2921,7 +4151,7 @@ static void reset_net_namespace(void)
 }
 #endif
 
-#if SYZ_EXECUTOR || SYZ_ENABLE_CGROUPS
+#if SYZ_EXECUTOR || (SYZ_ENABLE_CGROUPS && (SYZ_SANDBOX_NONE || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE || SYZ_SANDBOX_ANDROID_UNTRUSTED_APP))
 #include <fcntl.h>
 #include <sys/mount.h>
 #include <sys/stat.h>
@@ -2929,6 +4159,10 @@ static void reset_net_namespace(void)
 
 static void setup_cgroups()
 {
+#if SYZ_EXECUTOR
+	if (!flag_enable_cgroups)
+		return;
+#endif
 	if (mkdir("/syzcgroup", 0777)) {
 		debug("mkdir(/syzcgroup) failed: %d\n", errno);
 	}
@@ -2941,18 +4175,14 @@ static void setup_cgroups()
 	if (chmod("/syzcgroup/unified", 0777)) {
 		debug("chmod(/syzcgroup/unified) failed: %d\n", errno);
 	}
-	if (!write_file("/syzcgroup/unified/cgroup.subtree_control", "+cpu +memory +io +pids +rdma")) {
-		debug("write(cgroup.subtree_control) failed: %d\n", errno);
-	}
+	write_file("/syzcgroup/unified/cgroup.subtree_control", "+cpu +memory +io +pids +rdma");
 	if (mkdir("/syzcgroup/cpu", 0777)) {
 		debug("mkdir(/syzcgroup/cpu) failed: %d\n", errno);
 	}
 	if (mount("none", "/syzcgroup/cpu", "cgroup", 0, "cpuset,cpuacct,perf_event,hugetlb")) {
 		debug("mount(cgroup cpu) failed: %d\n", errno);
 	}
-	if (!write_file("/syzcgroup/cpu/cgroup.clone_children", "1")) {
-		debug("write(/syzcgroup/cpu/cgroup.clone_children) failed: %d\n", errno);
-	}
+	write_file("/syzcgroup/cpu/cgroup.clone_children", "1");
 	if (chmod("/syzcgroup/cpu", 0777)) {
 		debug("chmod(/syzcgroup/cpu) failed: %d\n", errno);
 	}
@@ -2965,25 +4195,98 @@ static void setup_cgroups()
 	if (chmod("/syzcgroup/net", 0777)) {
 		debug("chmod(/syzcgroup/net) failed: %d\n", errno);
 	}
-	if (!write_file("/proc/self/oom_score_adj", "-1000")) {
-		debug("write(oom_score_adj) failed: %d\n", errno);
-	}
 }
-static void setup_binfmt_misc()
+
+#if SYZ_EXECUTOR || SYZ_REPEAT
+static void setup_cgroups_loop()
 {
-	if (mount(0, "/proc/sys/fs/binfmt_misc", "binfmt_misc", 0, 0)) {
-		debug("mount(binfmt_misc) failed: %d\n", errno);
+#if SYZ_EXECUTOR
+	if (!flag_enable_cgroups)
+		return;
+#endif
+	int pid = getpid();
+	char file[128];
+	char cgroupdir[64];
+	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/unified/syz%llu", procid);
+	if (mkdir(cgroupdir, 0777)) {
+		debug("mkdir(%s) failed: %d\n", cgroupdir, errno);
 	}
-	if (!write_file("/proc/sys/fs/binfmt_misc/register", ":syz0:M:0:\x01::./file0:")) {
-		debug("write(/proc/sys/fs/binfmt_misc/register, syz0) failed: %d\n", errno);
+	snprintf(file, sizeof(file), "%s/pids.max", cgroupdir);
+	write_file(file, "32");
+	snprintf(file, sizeof(file), "%s/memory.low", cgroupdir);
+	write_file(file, "%d", 298 << 20);
+	snprintf(file, sizeof(file), "%s/memory.high", cgroupdir);
+	write_file(file, "%d", 299 << 20);
+	snprintf(file, sizeof(file), "%s/memory.max", cgroupdir);
+	write_file(file, "%d", 300 << 20);
+	snprintf(file, sizeof(file), "%s/cgroup.procs", cgroupdir);
+	write_file(file, "%d", pid);
+	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/cpu/syz%llu", procid);
+	if (mkdir(cgroupdir, 0777)) {
+		debug("mkdir(%s) failed: %d\n", cgroupdir, errno);
 	}
-	if (!write_file("/proc/sys/fs/binfmt_misc/register", ":syz1:M:1:\x02::./file0:POC")) {
-		debug("write(/proc/sys/fs/binfmt_misc/register, syz1) failed: %d\n", errno);
+	snprintf(file, sizeof(file), "%s/cgroup.procs", cgroupdir);
+	write_file(file, "%d", pid);
+	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/net/syz%llu", procid);
+	if (mkdir(cgroupdir, 0777)) {
+		debug("mkdir(%s) failed: %d\n", cgroupdir, errno);
+	}
+	snprintf(file, sizeof(file), "%s/cgroup.procs", cgroupdir);
+	write_file(file, "%d", pid);
+}
+
+static void setup_cgroups_test()
+{
+#if SYZ_EXECUTOR
+	if (!flag_enable_cgroups)
+		return;
+#endif
+	char cgroupdir[64];
+	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/unified/syz%llu", procid);
+	if (symlink(cgroupdir, "./cgroup")) {
+		debug("symlink(%s, ./cgroup) failed: %d\n", cgroupdir, errno);
+	}
+	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/cpu/syz%llu", procid);
+	if (symlink(cgroupdir, "./cgroup.cpu")) {
+		debug("symlink(%s, ./cgroup.cpu) failed: %d\n", cgroupdir, errno);
+	}
+	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/net/syz%llu", procid);
+	if (symlink(cgroupdir, "./cgroup.net")) {
+		debug("symlink(%s, ./cgroup.net) failed: %d\n", cgroupdir, errno);
 	}
 }
 #endif
 
-#if SYZ_EXECUTOR || SYZ_SANDBOX_NONE || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE
+#if SYZ_EXECUTOR || SYZ_SANDBOX_NAMESPACE
+void initialize_cgroups()
+{
+#if SYZ_EXECUTOR
+	if (!flag_enable_cgroups)
+		return;
+#endif
+	if (mkdir("./syz-tmp/newroot/syzcgroup", 0700))
+		fail("mkdir failed");
+	if (mkdir("./syz-tmp/newroot/syzcgroup/unified", 0700))
+		fail("mkdir failed");
+	if (mkdir("./syz-tmp/newroot/syzcgroup/cpu", 0700))
+		fail("mkdir failed");
+	if (mkdir("./syz-tmp/newroot/syzcgroup/net", 0700))
+		fail("mkdir failed");
+	unsigned bind_mount_flags = MS_BIND | MS_REC | MS_PRIVATE;
+	if (mount("/syzcgroup/unified", "./syz-tmp/newroot/syzcgroup/unified", NULL, bind_mount_flags, NULL)) {
+		debug("mount(cgroup2, MS_BIND) failed: %d\n", errno);
+	}
+	if (mount("/syzcgroup/cpu", "./syz-tmp/newroot/syzcgroup/cpu", NULL, bind_mount_flags, NULL)) {
+		debug("mount(cgroup/cpu, MS_BIND) failed: %d\n", errno);
+	}
+	if (mount("/syzcgroup/net", "./syz-tmp/newroot/syzcgroup/net", NULL, bind_mount_flags, NULL)) {
+		debug("mount(cgroup/net, MS_BIND) failed: %d\n", errno);
+	}
+}
+#endif
+#endif
+
+#if SYZ_EXECUTOR || SYZ_SANDBOX_NONE || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE || SYZ_SANDBOX_ANDROID_UNTRUSTED_APP
 #include <errno.h>
 #include <sys/mount.h>
 
@@ -2994,12 +4297,9 @@ static void setup_common()
 	}
 #if SYZ_EXECUTOR || SYZ_ENABLE_CGROUPS
 	setup_cgroups();
-	setup_binfmt_misc();
 #endif
 }
-#endif
 
-#if SYZ_EXECUTOR || SYZ_SANDBOX_NONE || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE
 #include <sched.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
@@ -3024,9 +4324,14 @@ static void sandbox_common()
 #endif
 
 	struct rlimit rlim;
-	rlim.rlim_cur = rlim.rlim_max = 160 << 20;
+#if SYZ_EXECUTOR
+	rlim.rlim_cur = rlim.rlim_max = (200 << 20) +
+					(kMaxThreads * kCoverSize + kExtraCoverSize) * sizeof(void*);
+#else
+	rlim.rlim_cur = rlim.rlim_max = (200 << 20);
+#endif
 	setrlimit(RLIMIT_AS, &rlim);
-	rlim.rlim_cur = rlim.rlim_max = 8 << 20;
+	rlim.rlim_cur = rlim.rlim_max = 32 << 20;
 	setrlimit(RLIMIT_MEMLOCK, &rlim);
 	rlim.rlim_cur = rlim.rlim_max = 136 << 20;
 	setrlimit(RLIMIT_FSIZE, &rlim);
@@ -3051,6 +4356,22 @@ static void sandbox_common()
 	if (unshare(CLONE_SYSVSEM)) {
 		debug("unshare(CLONE_SYSVSEM): %d\n", errno);
 	}
+	typedef struct {
+		const char* name;
+		const char* value;
+	} sysctl_t;
+	static const sysctl_t sysctls[] = {
+	    {"/proc/sys/kernel/shmmax", "16777216"},
+	    {"/proc/sys/kernel/shmall", "536870912"},
+	    {"/proc/sys/kernel/shmmni", "1024"},
+	    {"/proc/sys/kernel/msgmax", "8192"},
+	    {"/proc/sys/kernel/msgmni", "1024"},
+	    {"/proc/sys/kernel/msgmnb", "1024"},
+	    {"/proc/sys/kernel/sem", "1024 1048576 500 1024"},
+	};
+	unsigned i;
+	for (i = 0; i < sizeof(sysctls) / sizeof(sysctls[0]); i++)
+		write_file(sysctls[i].name, sysctls[i].value);
 }
 
 int wait_for_loop(int pid)
@@ -3080,6 +4401,9 @@ static int do_sandbox_none(void)
 
 	setup_common();
 	sandbox_common();
+#if SYZ_EXECUTOR || SYZ_ENABLE_NETDEV
+	initialize_netdevices_init();
+#endif
 	if (unshare(CLONE_NEWNET)) {
 		debug("unshare(CLONE_NEWNET): %d\n", errno);
 	}
@@ -3099,6 +4423,7 @@ static int do_sandbox_none(void)
 #include <sched.h>
 #include <sys/prctl.h>
 
+#define SYZ_HAVE_SANDBOX_SETUID 1
 static int do_sandbox_setuid(void)
 {
 	if (unshare(CLONE_NEWPID)) {
@@ -3110,6 +4435,9 @@ static int do_sandbox_setuid(void)
 
 	setup_common();
 	sandbox_common();
+#if SYZ_EXECUTOR || SYZ_ENABLE_NETDEV
+	initialize_netdevices_init();
+#endif
 	if (unshare(CLONE_NEWNET)) {
 		debug("unshare(CLONE_NEWNET): %d\n", errno);
 	}
@@ -3152,6 +4480,10 @@ static int namespace_sandbox_proc(void* arg)
 		fail("write of /proc/self/uid_map failed");
 	if (!write_file("/proc/self/gid_map", "0 %d 1\n", real_gid))
 		fail("write of /proc/self/gid_map failed");
+
+#if SYZ_EXECUTOR || SYZ_ENABLE_NETDEV
+	initialize_netdevices_init();
+#endif
 	if (unshare(CLONE_NEWNET))
 		fail("unshare(CLONE_NEWNET)");
 #if SYZ_EXECUTOR || SYZ_TUN_ENABLE
@@ -3190,23 +4522,7 @@ static int namespace_sandbox_proc(void* arg)
 	if (mount("/sys", "./syz-tmp/newroot/sys", 0, bind_mount_flags, NULL))
 		fail("mount(sysfs) failed");
 #if SYZ_EXECUTOR || SYZ_ENABLE_CGROUPS
-	if (mkdir("./syz-tmp/newroot/syzcgroup", 0700))
-		fail("mkdir failed");
-	if (mkdir("./syz-tmp/newroot/syzcgroup/unified", 0700))
-		fail("mkdir failed");
-	if (mkdir("./syz-tmp/newroot/syzcgroup/cpu", 0700))
-		fail("mkdir failed");
-	if (mkdir("./syz-tmp/newroot/syzcgroup/net", 0700))
-		fail("mkdir failed");
-	if (mount("/syzcgroup/unified", "./syz-tmp/newroot/syzcgroup/unified", NULL, bind_mount_flags, NULL)) {
-		debug("mount(cgroup2, MS_BIND) failed: %d\n", errno);
-	}
-	if (mount("/syzcgroup/cpu", "./syz-tmp/newroot/syzcgroup/cpu", NULL, bind_mount_flags, NULL)) {
-		debug("mount(cgroup/cpu, MS_BIND) failed: %d\n", errno);
-	}
-	if (mount("/syzcgroup/net", "./syz-tmp/newroot/syzcgroup/net", NULL, bind_mount_flags, NULL)) {
-		debug("mount(cgroup/net, MS_BIND) failed: %d\n", errno);
-	}
+	initialize_cgroups();
 #endif
 	if (mkdir("./syz-tmp/pivot", 0777))
 		fail("mkdir failed");
@@ -3241,6 +4557,7 @@ static int namespace_sandbox_proc(void* arg)
 	doexit(1);
 }
 
+#define SYZ_HAVE_SANDBOX_NAMESPACE 1
 static int do_sandbox_namespace(void)
 {
 	int pid;
@@ -3252,6 +4569,118 @@ static int do_sandbox_namespace(void)
 	pid = clone(namespace_sandbox_proc, &sandbox_stack[sizeof(sandbox_stack) - 64],
 		    CLONE_NEWUSER | CLONE_NEWPID, 0);
 	return wait_for_loop(pid);
+}
+#endif
+
+#if SYZ_EXECUTOR || SYZ_SANDBOX_ANDROID_UNTRUSTED_APP
+#include <fcntl.h>
+#include <grp.h>
+#include <sys/xattr.h>
+
+#define AID_NET_BT_ADMIN 3001
+#define AID_NET_BT 3002
+#define AID_INET 3003
+#define AID_EVERYBODY 9997
+#define AID_APP 10000
+
+#define UNTRUSTED_APP_UID AID_APP + 999
+#define UNTRUSTED_APP_GID AID_APP + 999
+
+const char* SELINUX_CONTEXT_UNTRUSTED_APP = "u:r:untrusted_app:s0:c512,c768";
+const char* SELINUX_LABEL_APP_DATA_FILE = "u:object_r:app_data_file:s0:c512,c768";
+const char* SELINUX_CONTEXT_FILE = "/proc/thread-self/attr/current";
+const char* SELINUX_XATTR_NAME = "security.selinux";
+
+const gid_t UNTRUSTED_APP_GROUPS[] = {UNTRUSTED_APP_GID, AID_NET_BT_ADMIN, AID_NET_BT, AID_INET, AID_EVERYBODY};
+const size_t UNTRUSTED_APP_NUM_GROUPS = sizeof(UNTRUSTED_APP_GROUPS) / sizeof(UNTRUSTED_APP_GROUPS[0]);
+static void syz_getcon(char* context, size_t context_size)
+{
+	int fd = open(SELINUX_CONTEXT_FILE, O_RDONLY);
+
+	if (fd < 0)
+		fail("getcon: Couldn't open %s", SELINUX_CONTEXT_FILE);
+
+	ssize_t nread = read(fd, context, context_size);
+
+	close(fd);
+
+	if (nread <= 0)
+		fail("getcon: Failed to read from %s", SELINUX_CONTEXT_FILE);
+	if (context[nread - 1] == '\n')
+		context[nread - 1] = '\0';
+}
+static void syz_setcon(const char* context)
+{
+	char new_context[512];
+	int fd = open(SELINUX_CONTEXT_FILE, O_WRONLY);
+
+	if (fd < 0)
+		fail("setcon: Could not open %s", SELINUX_CONTEXT_FILE);
+
+	ssize_t bytes_written = write(fd, context, strlen(context));
+	close(fd);
+
+	if (bytes_written != (ssize_t)strlen(context))
+		fail("setcon: Could not write entire context.  Wrote %zi, expected %zu", bytes_written, strlen(context));
+	syz_getcon(new_context, sizeof(new_context));
+
+	if (strcmp(context, new_context) != 0)
+		fail("setcon: Failed to change to %s, context is %s", context, new_context);
+}
+static int syz_getfilecon(const char* path, char* context, size_t context_size)
+{
+	int length = getxattr(path, SELINUX_XATTR_NAME, context, context_size);
+
+	if (length == -1)
+		fail("getfilecon: getxattr failed");
+
+	return length;
+}
+static void syz_setfilecon(const char* path, const char* context)
+{
+	char new_context[512];
+
+	if (setxattr(path, SELINUX_XATTR_NAME, context, strlen(context) + 1, 0) != 0)
+		fail("setfilecon: setxattr failed");
+
+	if (syz_getfilecon(path, new_context, sizeof(new_context)) <= 0)
+		fail("setfilecon: getfilecon failed");
+
+	if (strcmp(context, new_context) != 0)
+		fail("setfilecon: could not set context to %s, currently %s", context, new_context);
+}
+
+#define SYZ_HAVE_SANDBOX_ANDROID_UNTRUSTED_APP 1
+static int do_sandbox_android_untrusted_app(void)
+{
+	setup_common();
+	sandbox_common();
+
+	if (chown(".", UNTRUSTED_APP_UID, UNTRUSTED_APP_UID) != 0)
+		fail("chmod failed");
+
+	if (setgroups(UNTRUSTED_APP_NUM_GROUPS, UNTRUSTED_APP_GROUPS) != 0)
+		fail("setgroups failed");
+
+	if (setresgid(UNTRUSTED_APP_GID, UNTRUSTED_APP_GID, UNTRUSTED_APP_GID) != 0)
+		fail("setresgid failed");
+
+	if (setresuid(UNTRUSTED_APP_UID, UNTRUSTED_APP_UID, UNTRUSTED_APP_UID) != 0)
+		fail("setresuid failed");
+
+	syz_setfilecon(".", SELINUX_LABEL_APP_DATA_FILE);
+	syz_setcon(SELINUX_CONTEXT_UNTRUSTED_APP);
+
+#if SYZ_EXECUTOR || SYZ_TUN_ENABLE
+	initialize_tun();
+#endif
+#if SYZ_EXECUTOR || SYZ_ENABLE_NETDEV
+	initialize_netdevices_init();
+	initialize_netdevices();
+#endif
+
+	loop();
+	doexit(1);
 }
 #endif
 
@@ -3296,7 +4725,6 @@ retry:
 		}
 		int i;
 		for (i = 0;; i++) {
-			debug("unlink(%s)\n", filename);
 			if (unlink(filename) == 0)
 				break;
 			if (errno == EPERM) {
@@ -3323,7 +4751,6 @@ retry:
 	closedir(dp);
 	int i;
 	for (i = 0;; i++) {
-		debug("rmdir(%s)\n", dir);
 		if (rmdir(dir) == 0)
 			break;
 		if (i < 100) {
@@ -3368,11 +4795,10 @@ retry:
 static int inject_fault(int nth)
 {
 	int fd;
-	char buf[16];
-
 	fd = open("/proc/thread-self/fail-nth", O_RDWR);
 	if (fd == -1)
 		exitf("failed to open /proc/thread-self/fail-nth");
+	char buf[16];
 	sprintf(buf, "%d", nth + 1);
 	if (write(fd, buf, strlen(buf)) != (ssize_t)strlen(buf))
 		exitf("failed to write /proc/thread-self/fail-nth");
@@ -3458,52 +4884,7 @@ static void kill_and_wait(int pid, int* status)
 static void setup_loop()
 {
 #if SYZ_EXECUTOR || SYZ_ENABLE_CGROUPS
-	int pid = getpid();
-	char cgroupdir[64];
-	char file[128];
-	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/unified/syz%llu", procid);
-	if (mkdir(cgroupdir, 0777)) {
-		debug("mkdir(%s) failed: %d\n", cgroupdir, errno);
-	}
-	snprintf(file, sizeof(file), "%s/pids.max", cgroupdir);
-	if (!write_file(file, "32")) {
-		debug("write(%s) failed: %d\n", file, errno);
-	}
-	snprintf(file, sizeof(file), "%s/memory.low", cgroupdir);
-	if (!write_file(file, "%d", 198 << 20)) {
-		debug("write(%s) failed: %d\n", file, errno);
-	}
-	snprintf(file, sizeof(file), "%s/memory.high", cgroupdir);
-	if (!write_file(file, "%d", 199 << 20)) {
-		debug("write(%s) failed: %d\n", file, errno);
-	}
-	snprintf(file, sizeof(file), "%s/memory.max", cgroupdir);
-	if (!write_file(file, "%d", 200 << 20)) {
-		debug("write(%s) failed: %d\n", file, errno);
-	}
-	if (!write_file("/proc/self/oom_score_adj", "-1000")) {
-		debug("write(oom_score_adj) failed: %d\n", errno);
-	}
-	snprintf(file, sizeof(file), "%s/cgroup.procs", cgroupdir);
-	if (!write_file(file, "%d", pid)) {
-		debug("write(%s) failed: %d\n", file, errno);
-	}
-	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/cpu/syz%llu", procid);
-	if (mkdir(cgroupdir, 0777)) {
-		debug("mkdir(%s) failed: %d\n", cgroupdir, errno);
-	}
-	snprintf(file, sizeof(file), "%s/cgroup.procs", cgroupdir);
-	if (!write_file(file, "%d", pid)) {
-		debug("write(%s) failed: %d\n", file, errno);
-	}
-	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/net/syz%llu", procid);
-	if (mkdir(cgroupdir, 0777)) {
-		debug("mkdir(%s) failed: %d\n", cgroupdir, errno);
-	}
-	snprintf(file, sizeof(file), "%s/cgroup.procs", cgroupdir);
-	if (!write_file(file, "%d", pid)) {
-		debug("write(%s) failed: %d\n", file, errno);
-	}
+	setup_cgroups_loop();
 #endif
 #if SYZ_EXECUTOR || SYZ_RESET_NET_NAMESPACE
 	checkpoint_net_namespace();
@@ -3539,34 +4920,156 @@ static void setup_test()
 	prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
 	setpgrp();
 #if SYZ_EXECUTOR || SYZ_ENABLE_CGROUPS
-	char cgroupdir[64];
-	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/unified/syz%llu", procid);
-	if (symlink(cgroupdir, "./cgroup")) {
-		debug("symlink(%s, ./cgroup) failed: %d\n", cgroupdir, errno);
-	}
-	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/cpu/syz%llu", procid);
-	if (symlink(cgroupdir, "./cgroup.cpu")) {
-		debug("symlink(%s, ./cgroup.cpu) failed: %d\n", cgroupdir, errno);
-	}
-	snprintf(cgroupdir, sizeof(cgroupdir), "/syzcgroup/net/syz%llu", procid);
-	if (symlink(cgroupdir, "./cgroup.net")) {
-		debug("symlink(%s, ./cgroup.net) failed: %d\n", cgroupdir, errno);
-	}
-	if (!write_file("/proc/self/oom_score_adj", "0")) {
-		debug("write(oom_score_adj) failed: %d\n", errno);
-	}
+	setup_cgroups_test();
 #endif
+	write_file("/proc/self/oom_score_adj", "1000");
 #if SYZ_EXECUTOR || SYZ_TUN_ENABLE
 	flush_tun();
 #endif
 }
+#endif
 
-#define SYZ_HAVE_RESET_TEST 1
-static void reset_test()
+#if SYZ_EXECUTOR || SYZ_ENABLE_CLOSE_FDS
+#define SYZ_HAVE_CLOSE_FDS 1
+static void close_fds()
 {
+#if SYZ_EXECUTOR
+	if (!flag_enable_close_fds)
+		return;
+#endif
 	int fd;
 	for (fd = 3; fd < 30; fd++)
 		close(fd);
+}
+#endif
+
+#if SYZ_EXECUTOR || SYZ_FAULT_INJECTION
+#include <errno.h>
+
+static void setup_fault()
+{
+	static struct {
+		const char* file;
+		const char* val;
+		bool fatal;
+	} files[] = {
+	    {"/sys/kernel/debug/failslab/ignore-gfp-wait", "N", true},
+	    {"/sys/kernel/debug/fail_futex/ignore-private", "N", false},
+	    {"/sys/kernel/debug/fail_page_alloc/ignore-gfp-highmem", "N", false},
+	    {"/sys/kernel/debug/fail_page_alloc/ignore-gfp-wait", "N", false},
+	    {"/sys/kernel/debug/fail_page_alloc/min-order", "0", false},
+	};
+	unsigned i;
+	for (i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+		if (!write_file(files[i].file, files[i].val)) {
+			debug("failed to write %s: %d\n", files[i].file, errno);
+			if (files[i].fatal)
+				fail("failed to write %s", files[i].file);
+		}
+	}
+}
+#endif
+
+#if SYZ_EXECUTOR || SYZ_ENABLE_LEAK
+#include <fcntl.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#define KMEMLEAK_FILE "/sys/kernel/debug/kmemleak"
+
+static void setup_leak()
+{
+	if (!write_file(KMEMLEAK_FILE, "scan"))
+		fail("failed to write %s", KMEMLEAK_FILE);
+	sleep(5);
+	if (!write_file(KMEMLEAK_FILE, "scan"))
+		fail("failed to write %s", KMEMLEAK_FILE);
+	if (!write_file(KMEMLEAK_FILE, "clear"))
+		fail("failed to write %s", KMEMLEAK_FILE);
+}
+
+#define SYZ_HAVE_LEAK_CHECK 1
+#if SYZ_EXECUTOR
+static void check_leaks(char** frames, int nframes)
+#else
+static void check_leaks(void)
+#endif
+{
+	int fd = open(KMEMLEAK_FILE, O_RDWR);
+	if (fd == -1)
+		fail("failed to open(\"%s\")", KMEMLEAK_FILE);
+	uint64 start = current_time_ms();
+	if (write(fd, "scan", 4) != 4)
+		fail("failed to write(%s, \"scan\")", KMEMLEAK_FILE);
+	sleep(1);
+	while (current_time_ms() - start < 4 * 1000)
+		sleep(1);
+	if (write(fd, "scan", 4) != 4)
+		fail("failed to write(%s, \"scan\")", KMEMLEAK_FILE);
+	static char buf[128 << 10];
+	ssize_t n = read(fd, buf, sizeof(buf) - 1);
+	if (n < 0)
+		fail("failed to read(%s)", KMEMLEAK_FILE);
+	int nleaks = 0;
+	if (n != 0) {
+		sleep(1);
+		if (write(fd, "scan", 4) != 4)
+			fail("failed to write(%s, \"scan\")", KMEMLEAK_FILE);
+		if (lseek(fd, 0, SEEK_SET) < 0)
+			fail("failed to lseek(%s)", KMEMLEAK_FILE);
+		n = read(fd, buf, sizeof(buf) - 1);
+		if (n < 0)
+			fail("failed to read(%s)", KMEMLEAK_FILE);
+		buf[n] = 0;
+		char* pos = buf;
+		char* end = buf + n;
+		while (pos < end) {
+			char* next = strstr(pos + 1, "unreferenced object");
+			if (!next)
+				next = end;
+			char prev = *next;
+			*next = 0;
+#if SYZ_EXECUTOR
+			int f;
+			for (f = 0; f < nframes; f++) {
+				if (strstr(pos, frames[f]))
+					break;
+			}
+			if (f != nframes) {
+				*next = prev;
+				pos = next;
+				continue;
+			}
+#endif
+			fprintf(stderr, "BUG: memory leak\n%s\n", pos);
+			*next = prev;
+			pos = next;
+			nleaks++;
+		}
+	}
+	if (write(fd, "clear", 5) != 5)
+		fail("failed to write(%s, \"clear\")", KMEMLEAK_FILE);
+	close(fd);
+	if (nleaks)
+		doexit(1);
+}
+#endif
+
+#if SYZ_EXECUTOR || SYZ_ENABLE_BINFMT_MISC
+#include <fcntl.h>
+#include <sys/mount.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+static void setup_binfmt_misc()
+{
+	if (mount(0, "/proc/sys/fs/binfmt_misc", "binfmt_misc", 0, 0)) {
+		debug("mount(binfmt_misc) failed: %d\n", errno);
+	}
+	write_file("/proc/sys/fs/binfmt_misc/register", ":syz0:M:0:\x01::./file0:");
+	write_file("/proc/sys/fs/binfmt_misc/register", ":syz1:M:1:\x02::./file0:POC");
 }
 #endif
 
@@ -3577,7 +5080,7 @@ static void reset_test()
 
 #if SYZ_EXECUTOR || __NR_syz_mmap
 #include <sys/mman.h>
-static long syz_mmap(long a0, long a1)
+static long syz_mmap(volatile long a0, volatile long a1)
 {
 	return (long)mmap((void*)a0, a1, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0);
 }
@@ -3585,17 +5088,25 @@ static long syz_mmap(long a0, long a1)
 
 #if SYZ_EXECUTOR || __NR_syz_errno
 #include <errno.h>
-static long syz_errno(long v)
+static long syz_errno(volatile long v)
 {
 	errno = v;
 	return v == 0 ? 0 : -1;
 }
 #endif
 
+#if SYZ_EXECUTOR || __NR_syz_exit
+static long syz_exit(volatile long status)
+{
+	_exit(status);
+	return 0;
+}
+#endif
+
 #if SYZ_EXECUTOR || __NR_syz_compare
 #include <errno.h>
 #include <string.h>
-static long syz_compare(long want, long want_len, long got, long got_len)
+static long syz_compare(volatile long want, volatile long want_len, volatile long got, volatile long got_len)
 {
 	if (want_len != got_len) {
 		debug("syz_compare: want_len=%lu got_len=%lu\n", want_len, got_len);
@@ -3603,10 +5114,41 @@ static long syz_compare(long want, long want_len, long got, long got_len)
 		return -1;
 	}
 	if (memcmp((void*)want, (void*)got, want_len)) {
-		debug("syz_compare: data differs\n");
+		debug("syz_compare: data differs, want:\n");
+		debug_dump_data((char*)want, want_len);
+		debug("got:\n");
+		debug_dump_data((char*)got, got_len);
 		errno = EINVAL;
 		return -1;
 	}
+	return 0;
+}
+#endif
+
+#if SYZ_EXECUTOR || __NR_syz_compare_int
+#include <errno.h>
+#include <stdarg.h>
+static long syz_compare_int(volatile long n, ...)
+{
+	va_list args;
+	va_start(args, n);
+	long v0 = va_arg(args, long);
+	long v1 = va_arg(args, long);
+	long v2 = va_arg(args, long);
+	long v3 = va_arg(args, long);
+	va_end(args);
+	if (n < 2 || n > 4)
+		return errno = E2BIG, -1;
+	if (n <= 2 && v2 != 0)
+		return errno = EFAULT, -1;
+	if (n <= 3 && v3 != 0)
+		return errno = EFAULT, -1;
+	if (v0 != v1)
+		return errno = EINVAL, -1;
+	if (n > 2 && v0 != v2)
+		return errno = EINVAL, -1;
+	if (n > 3 && v0 != v3)
+		return errno = EINVAL, -1;
 	return 0;
 }
 #endif
@@ -3616,13 +5158,8 @@ static void loop();
 static int do_sandbox_none(void)
 {
 	loop();
-	doexit(0);
+	return 0;
 }
-#endif
-
-#if SYZ_EXECUTOR
-#define do_sandbox_setuid() 0
-#define do_sandbox_namespace() 0
 #endif
 
 #elif GOOS_windows
@@ -3732,72 +5269,26 @@ static void loop();
 static int do_sandbox_none(void)
 {
 	loop();
-	doexit(0);
-}
-#endif
-
-#if SYZ_EXECUTOR
-#define do_sandbox_setuid() 0
-#define do_sandbox_namespace() 0
-#endif
-
-#elif GOOS_test
-
-#include <stdlib.h>
-#include <unistd.h>
-
-#if SYZ_EXECUTOR || __NR_syz_mmap
-#include <sys/mman.h>
-static long syz_mmap(long a0, long a1)
-{
-	return (long)mmap((void*)a0, a1, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_FIXED, -1, 0);
-}
-#endif
-
-#if SYZ_EXECUTOR || __NR_syz_errno
-#include <errno.h>
-static long syz_errno(long v)
-{
-	errno = v;
-	return v == 0 ? 0 : -1;
-}
-#endif
-
-#if SYZ_EXECUTOR || __NR_syz_compare
-#include <errno.h>
-#include <string.h>
-static long syz_compare(long want, long want_len, long got, long got_len)
-{
-	if (want_len != got_len) {
-		debug("syz_compare: want_len=%lu got_len=%lu\n", want_len, got_len);
-		errno = EBADF;
-		return -1;
-	}
-	if (memcmp((void*)want, (void*)got, want_len)) {
-		debug("syz_compare: data differs\n");
-		errno = EINVAL;
-		return -1;
-	}
 	return 0;
 }
 #endif
 
-#if SYZ_EXECUTOR || SYZ_SANDBOX_NONE
-static void loop();
-static int do_sandbox_none(void)
-{
-	loop();
-	doexit(0);
-}
-#endif
-
-#if SYZ_EXECUTOR
-#define do_sandbox_setuid() 0
-#define do_sandbox_namespace() 0
-#endif
-
 #else
 #error "unknown OS"
+#endif
+
+#if SYZ_EXECUTOR || __NR_syz_execute_func
+static long syz_execute_func(volatile long text)
+{
+	volatile long p[8] = {0};
+	(void)p;
+#if GOARCH_amd64
+	asm volatile("" ::"r"(0l), "r"(1l), "r"(2l), "r"(3l), "r"(4l), "r"(5l), "r"(6l),
+		     "r"(7l), "r"(8l), "r"(9l), "r"(10l), "r"(11l), "r"(12l), "r"(13l));
+#endif
+	NONFAILING(((void (*)(void))(text))());
+	return 0;
+}
 #endif
 
 #if SYZ_THREADED
@@ -3834,14 +5325,14 @@ static void loop(void)
 	}
 #endif
 #if SYZ_TRACE
-	printf("### start\n");
+	fprintf(stderr, "### start\n");
 #endif
 	int i, call, thread;
 #if SYZ_COLLIDE
 	int collide = 0;
 again:
 #endif
-	for (call = 0; call < [[NUM_CALLS]]; call++) {
+	for (call = 0; call < /*NUM_CALLS*/; call++) {
 		for (thread = 0; thread < (int)(sizeof(threads) / sizeof(threads[0])); thread++) {
 			struct thread_t* th = &threads[thread];
 			if (!th->created) {
@@ -3861,12 +5352,15 @@ again:
 			if (collide && (call % 2) == 0)
 				break;
 #endif
-			event_timedwait(&th->done, 45);
+			event_timedwait(&th->done, /*CALL_TIMEOUT*/);
 			break;
 		}
 	}
 	for (i = 0; i < 100 && __atomic_load_n(&running, __ATOMIC_RELAXED); i++)
 		sleep_ms(1);
+#if SYZ_HAVE_CLOSE_FDS
+	close_fds();
+#endif
 #if SYZ_COLLIDE
 	if (!collide) {
 		collide = 1;
@@ -3908,7 +5402,7 @@ static void loop(void)
 #endif
 	int iter;
 #if SYZ_REPEAT_TIMES
-	for (iter = 0; iter < [[REPEAT_TIMES]]; iter++) {
+	for (iter = 0; iter < /*REPEAT_TIMES*/; iter++) {
 #else
 	for (iter = 0;; iter++) {
 #endif
@@ -3951,9 +5445,8 @@ static void loop(void)
 			close(kOutPipeFd);
 #endif
 			execute_one();
-			debug("worker exiting\n");
-#if SYZ_HAVE_RESET_TEST
-			reset_test();
+#if SYZ_HAVE_CLOSE_FDS && !SYZ_THREADED
+			close_fds();
 #endif
 			doexit(0);
 #endif
@@ -3986,20 +5479,22 @@ static void loop(void)
 			if (current_time_ms() - start < 5 * 1000)
 				continue;
 #endif
-			debug("killing\n");
+			debug("killing hanging pid %d\n", pid);
 			kill_and_wait(pid, &status);
 			break;
 		}
 #if SYZ_EXECUTOR
-		status = WEXITSTATUS(status);
-		if (status == kFailStatus)
+		if (WEXITSTATUS(status) == kFailStatus) {
+			errno = 0;
 			fail("child failed");
-		if (status == kErrorStatus)
-			error("child errored");
+		}
 		reply_execute(0);
 #endif
 #if SYZ_EXECUTOR || SYZ_USE_TMP_DIR
 		remove_dir(cwdbuf);
+#endif
+#if SYZ_ENABLE_LEAK
+		check_leaks();
 #endif
 	}
 }
@@ -4010,12 +5505,13 @@ static void loop(void)
 }
 #endif
 #endif
+
 #if !SYZ_EXECUTOR
-[[SYSCALL_DEFINES]]
+/*SYSCALL_DEFINES*/
 
-[[RESULTS]]
+/*RESULTS*/
 
-#if SYZ_THREADED || SYZ_REPEAT || SYZ_SANDBOX_NONE || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE
+#if SYZ_THREADED || SYZ_REPEAT || SYZ_SANDBOX_NONE || SYZ_SANDBOX_SETUID || SYZ_SANDBOX_NAMESPACE || SYZ_SANDBOX_ANDROID_UNTRUSTED_APP
 #if SYZ_THREADED
 void execute_call(int call)
 #elif SYZ_REPEAT
@@ -4024,7 +5520,10 @@ void execute_one(void)
 void loop(void)
 #endif
 {
-	[[SYSCALLS]]
+	/*SYSCALLS*/
+#if SYZ_HAVE_CLOSE_FDS && !SYZ_THREADED && !SYZ_REPEAT
+	close_fds();
+#endif
 }
 #endif
 #if GOOS_akaros && SYZ_REPEAT
@@ -4032,7 +5531,7 @@ void loop(void)
 
 int main(int argc, char** argv)
 {
-	[[MMAP_DATA]]
+	/*MMAP_DATA*/
 
 	program_name = argv[0];
 	if (argc == 2 && strcmp(argv[1], "child") == 0)
@@ -4040,24 +5539,41 @@ int main(int argc, char** argv)
 #else
 int main(void)
 {
-	[[MMAP_DATA]]
+	/*MMAP_DATA*/
+#endif
+
+#if SYZ_ENABLE_BINFMT_MISC
+	setup_binfmt_misc();
+#endif
+#if SYZ_ENABLE_LEAK
+	setup_leak();
+#endif
+#if SYZ_FAULT_INJECTION
+	setup_fault();
 #endif
 
 #if SYZ_HANDLE_SEGV
 	install_segv_handler();
 #endif
 #if SYZ_PROCS
-	for (procid = 0; procid < [[PROCS]]; procid++) {
+	for (procid = 0; procid < /*PROCS*/; procid++) {
 		if (fork() == 0) {
 #endif
-#if SYZ_USE_TMP_DIR
+#if SYZ_USE_TMP_DIR || SYZ_SANDBOX_ANDROID_UNTRUSTED_APP
 			use_temporary_dir();
 #endif
-			[[SANDBOX_FUNC]]
+			/*SANDBOX_FUNC*/
+#if SYZ_HAVE_CLOSE_FDS && !SYZ_THREADED && !SYZ_REPEAT && !SYZ_SANDBOX_NONE && \
+    !SYZ_SANDBOX_SETUID && !SYZ_SANDBOX_NAMESPACE && !SYZ_SANDBOX_ANDROID_UNTRUSTED_APP
+			close_fds();
+#endif
 #if SYZ_PROCS
 		}
 	}
 	sleep(1000000);
+#endif
+#if !SYZ_PROCS && !SYZ_REPEAT && SYZ_ENABLE_LEAK
+	check_leaks();
 #endif
 	return 0;
 }

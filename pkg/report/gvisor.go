@@ -6,24 +6,30 @@ package report
 import (
 	"bytes"
 	"regexp"
+
+	"github.com/google/syzkaller/sys/targets"
 )
 
 type gvisor struct {
 	ignores []*regexp.Regexp
 }
 
-func ctorGvisor(kernelSrc, kernelObj string, ignores []*regexp.Regexp) (Reporter, []string, error) {
+func ctorGvisor(target *targets.Target, kernelSrc, kernelObj string,
+	ignores []*regexp.Regexp) (Reporter, []string, error) {
 	ctx := &gvisor{
 		ignores: ignores,
 	}
 	suppressions := []string{
 		"fatal error: runtime: out of memory",
 		"fatal error: runtime: cannot allocate memory",
-		"panic: ptrace sysemu failed: no such process",     // OOM kill
-		"panic: ptrace set fpregs failed: no such process", // OOM kill
-		"panic: ptrace set regs failed: no such process",   // OOM kill
+		"fatal error: newosproc",
+		"panic: ptrace sysemu failed: no such process",           // OOM kill
+		`panic: ptrace (s|g)et fpregs.* failed: no such process`, // OOM kill
+		`panic: ptrace (s|g)et regs.* failed: no such process`,   // OOM kill
+		"panic: error initializing first thread: resource temporarily unavailable",
 		"panic: failed to start executor binary",
 		"panic: executor failed: pthread_create failed",
+		"panic: error mapping run data: error mapping runData: cannot allocate memory",
 		"ERROR: ThreadSanitizer", // Go race failing due to OOM.
 		"FATAL: ThreadSanitizer",
 	}
@@ -79,6 +85,14 @@ var gvisorTitleReplacement = []replacement{
 	{
 		regexp.MustCompile(`container ".*"`),
 		"container NAME",
+	},
+	{
+		regexp.MustCompile(`sandbox ".*"`),
+		"sandbox NAME",
+	},
+	{
+		regexp.MustCompile(`(pid|PID) [0-9]+`),
+		"pid X",
 	},
 }
 

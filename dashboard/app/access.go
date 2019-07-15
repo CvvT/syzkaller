@@ -11,7 +11,7 @@ import (
 
 	"golang.org/x/net/context"
 	"google.golang.org/appengine"
-	"google.golang.org/appengine/datastore"
+	db "google.golang.org/appengine/datastore"
 	"google.golang.org/appengine/log"
 	"google.golang.org/appengine/user"
 )
@@ -72,6 +72,8 @@ func checkTextAccess(c context.Context, r *http.Request, tag string, id int64) (
 		return nil, checkAccessLevel(c, r, AccessAdmin)
 	case textPatch:
 		return nil, checkJobTextAccess(c, r, "Patch", id)
+	case textLog:
+		return nil, checkJobTextAccess(c, r, "Log", id)
 	case textError:
 		return nil, checkJobTextAccess(c, r, "Error", id)
 	case textKernelConfig:
@@ -99,7 +101,7 @@ func checkTextAccess(c context.Context, r *http.Request, tag string, id int64) (
 
 func checkCrashTextAccess(c context.Context, r *http.Request, field string, id int64) (*Crash, error) {
 	var crashes []*Crash
-	keys, err := datastore.NewQuery("Crash").
+	keys, err := db.NewQuery("Crash").
 		Filter(field+"=", id).
 		GetAll(c, &crashes)
 	if err != nil {
@@ -111,7 +113,7 @@ func checkCrashTextAccess(c context.Context, r *http.Request, field string, id i
 	}
 	crash := crashes[0]
 	bug := new(Bug)
-	if err := datastore.Get(c, keys[0].Parent(), bug); err != nil {
+	if err := db.Get(c, keys[0].Parent(), bug); err != nil {
 		return nil, fmt.Errorf("failed to get bug: %v", err)
 	}
 	bugLevel := bug.sanitizeAccess(accessLevel(c, r))
@@ -119,7 +121,7 @@ func checkCrashTextAccess(c context.Context, r *http.Request, field string, id i
 }
 
 func checkJobTextAccess(c context.Context, r *http.Request, field string, id int64) error {
-	keys, err := datastore.NewQuery("Job").
+	keys, err := db.NewQuery("Job").
 		Filter(field+"=", id).
 		KeysOnly().
 		GetAll(c, nil)
@@ -131,7 +133,7 @@ func checkJobTextAccess(c context.Context, r *http.Request, field string, id int
 			len(keys), field, id)
 	}
 	bug := new(Bug)
-	if err := datastore.Get(c, keys[0].Parent(), bug); err != nil {
+	if err := db.Get(c, keys[0].Parent(), bug); err != nil {
 		return fmt.Errorf("failed to get bug: %v", err)
 	}
 	bugLevel := bug.sanitizeAccess(accessLevel(c, r))
@@ -145,8 +147,9 @@ func (bug *Bug) sanitizeAccess(currentLevel AccessLevel) AccessLevel {
 			ns := config.Namespaces[bug.Namespace]
 			bugLevel := ns.ReportingByName(bugReporting.Name).AccessLevel
 			if currentLevel < bugLevel {
-				if bug.Status == BugStatusFixed || len(bug.Commits) != 0 {
-					// Fixed bugs are visible in all reportings,
+				if bug.Status == BugStatusInvalid ||
+					bug.Status == BugStatusFixed || len(bug.Commits) != 0 {
+					// Invalid and fixed bugs are visible in all reportings,
 					// however, without previous reporting private information.
 					lastLevel := ns.Reporting[len(ns.Reporting)-1].AccessLevel
 					if currentLevel >= lastLevel {

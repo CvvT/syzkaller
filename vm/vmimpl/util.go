@@ -22,7 +22,7 @@ func SleepInterruptible(d time.Duration) bool {
 	}
 }
 
-func WaitForSSH(debug bool, timeout time.Duration, addr, sshKey, sshUser, OS string, port int) error {
+func WaitForSSH(debug bool, timeout time.Duration, addr, sshKey, sshUser, OS string, port int, stop chan error) error {
 	pwd := "pwd"
 	if OS == "windows" {
 		pwd = "dir"
@@ -30,7 +30,11 @@ func WaitForSSH(debug bool, timeout time.Duration, addr, sshKey, sshUser, OS str
 	startTime := time.Now()
 	SleepInterruptible(5 * time.Second)
 	for {
-		if !SleepInterruptible(5 * time.Second) {
+		select {
+		case <-time.After(5 * time.Second):
+		case err := <-stop:
+			return err
+		case <-Shutdown:
 			return fmt.Errorf("shutdown in progress")
 		}
 		args := append(SSHArgs(debug, sshKey, port), sshUser+"@"+addr, pwd)
@@ -41,8 +45,11 @@ func WaitForSSH(debug bool, timeout time.Duration, addr, sshKey, sshUser, OS str
 		if err == nil {
 			return nil
 		}
+		if debug {
+			log.Logf(0, "ssh failed: %v", err)
+		}
 		if time.Since(startTime) > timeout {
-			return fmt.Errorf("can't ssh into the instance: %v", err)
+			return &osutil.VerboseError{Title: "can't ssh into the instance", Output: []byte(err.Error())}
 		}
 	}
 }
@@ -58,7 +65,6 @@ func SCPArgs(debug bool, sshKey string, port int) []string {
 func sshArgs(debug bool, sshKey, portArg string, port int) []string {
 	args := []string{
 		portArg, fmt.Sprint(port),
-		"-i", sshKey,
 		"-F", "/dev/null",
 		"-o", "UserKnownHostsFile=/dev/null",
 		"-o", "BatchMode=yes",

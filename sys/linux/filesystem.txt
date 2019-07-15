@@ -1,7 +1,9 @@
 # Copyright 2018 syzkaller project authors. All rights reserved.
 # Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
 
+include <uapi/linux/mount.h>
 include <linux/fs.h>
+include <linux/fcntl.h>
 
 mount(src ptr[in, blockdev_filename], dst ptr[in, filename], type ptr[in, string[filesystem]], flags flags[mount_flags], data ptr[in, string, opt])
 umount2(path ptr[in, filename], flags flags[umount_flags])
@@ -9,7 +11,32 @@ umount2(path ptr[in, filename], flags flags[umount_flags])
 mount$bpf(src const[0], dst ptr[in, filename], type ptr[in, string["bpf"]], flags flags[mount_flags], opts ptr[in, fs_options[bpf_options]])
 mount$overlay(src const[0], dst ptr[in, filename], type ptr[in, string["overlay"]], flags flags[mount_flags], opts ptr[in, fs_options[overlay_options]])
 
-filesystem = "sysfs", "rootfs", "ramfs", "tmpfs", "devtmpfs", "debugfs", "securityfs", "sockfs", "pipefs", "anon_inodefs", "devpts", "ext3", "ext2", "ext4", "hugetlbfs", "vfat", "ecryptfs", "fuseblk", "fuse", "rpc_pipefs", "nfs", "nfs4", "nfsd", "binfmt_misc", "autofs", "xfs", "jfs", "msdos", "ntfs", "minix", "hfs", "hfsplus", "qnx4", "ufs", "btrfs", "configfs", "ncpfs", "qnx6", "exofs", "befs", "vxfs", "gfs2", "gfs2meta", "fusectl", "bfs", "nsfs", "efs", "cifs", "efivarfs", "affs", "tracefs", "bdev", "ocfs2", "ocfs2_dlmfs", "hpfs", "proc", "afs", "reiserfs", "jffs2", "romfs", "aio", "sysv", "v7", "udf", "ceph", "pstore", "adfs", "9p", "hostfs", "squashfs", "cramfs", "iso9660", "coda", "nilfs2", "logfs", "overlay", "f2fs", "omfs", "ubifs", "openpromfs", "bpf", "cgroup", "cgroup2", "cpuset", "mqueue", "aufs", "selinuxfs", "dax"
+resource fd_fscontext[fd]
+resource fd_open_tree[fd]
+
+fsopen(type ptr[in, string[filesystem]], flags flags[fsopen_flags]) fd_fscontext
+fspick(dfd fd_dir[opt], path ptr[in, filename], flags flags[fspick_flags]) fd_fscontext
+fsconfig$FSCONFIG_SET_FLAG(fd fd_fscontext, cmd const[FSCONFIG_SET_FLAG], key ptr[in, string[fsconfig_flag_params]], value const[0], aux const[0])
+fsconfig$FSCONFIG_SET_STRING(fd fd_fscontext, cmd const[FSCONFIG_SET_STRING], key ptr[in, string], value ptr[in, string], aux const[0])
+fsconfig$FSCONFIG_SET_BINARY(fd fd_fscontext, cmd const[FSCONFIG_SET_BINARY], key ptr[in, string], value ptr[in, array[int8]], aux bytesize[value])
+fsconfig$FSCONFIG_SET_PATH(fd fd_fscontext, cmd const[FSCONFIG_SET_PATH], key ptr[in, string], value ptr[in, filename], aux fd_dir[opt])
+fsconfig$FSCONFIG_SET_PATH_EMPTY(fd fd_fscontext, cmd const[FSCONFIG_SET_PATH_EMPTY], key ptr[in, string], value ptr[in, filename], aux fd_dir[opt])
+fsconfig$FSCONFIG_SET_FD(fd fd_fscontext, cmd const[FSCONFIG_SET_FD], key ptr[in, string], value const[0], aux fd)
+fsconfig$FSCONFIG_CMD_CREATE(fd fd_fscontext, cmd const[FSCONFIG_CMD_CREATE], key const[0], value const[0], aux const[0])
+fsconfig$FSCONFIG_CMD_RECONFIGURE(fd fd_fscontext, cmd const[FSCONFIG_CMD_RECONFIGURE], key const[0], value const[0], aux const[0])
+fsmount(fs_fd fd_fscontext, flags flags[fsmount_flags], attr_flags flags[fsmount_attr_flags]) fd_open_tree
+move_mount(from_dfd fd_dir[opt], from_pathname ptr[in, filename], to_dfd fd_dir[opt], to_pathname ptr[in, filename], flags flags[move_mount_flags])
+open_tree(dfd fd_dir[opt], filename ptr[in, filename], flags flags[open_tree_flags]) fd_open_tree
+
+open_tree_flags = AT_EMPTY_PATH, AT_NO_AUTOMOUNT, AT_RECURSIVE, AT_SYMLINK_NOFOLLOW, OPEN_TREE_CLONE, OPEN_TREE_CLOEXEC
+fsmount_flags = FSMOUNT_CLOEXEC
+fsopen_flags = FSOPEN_CLOEXEC
+fspick_flags = FSPICK_CLOEXEC
+fsmount_attr_flags = MOUNT_ATTR_RDONLY, MOUNT_ATTR_NOSUID, MOUNT_ATTR_NODEV, MOUNT_ATTR_NOEXEC, MOUNT_ATTR__ATIME, MOUNT_ATTR_NODIRATIME
+move_mount_flags = MOVE_MOUNT_F_SYMLINKS, MOVE_MOUNT_F_AUTOMOUNTS, MOVE_MOUNT_F_EMPTY_PATH, MOVE_MOUNT_T_SYMLINKS, MOVE_MOUNT_T_AUTOMOUNTS, MOVE_MOUNT_T_EMPTY_PATH
+fsconfig_flag_params = "dirsync", "lazytime", "mand", "posixacl", "ro", "sync", "async", "nolazytime", "nomand", "rw", "silent"
+
+filesystem = "sysfs", "rootfs", "ramfs", "tmpfs", "devtmpfs", "debugfs", "securityfs", "sockfs", "pipefs", "anon_inodefs", "devpts", "ext3", "ext2", "ext4", "hugetlbfs", "vfat", "ecryptfs", "fuseblk", "fuse", "rpc_pipefs", "nfs", "nfs4", "nfsd", "binfmt_misc", "autofs", "xfs", "jfs", "msdos", "ntfs", "minix", "hfs", "hfsplus", "qnx4", "ufs", "btrfs", "configfs", "ncpfs", "qnx6", "exofs", "befs", "vxfs", "gfs2", "gfs2meta", "fusectl", "bfs", "nsfs", "efs", "cifs", "efivarfs", "affs", "tracefs", "bdev", "ocfs2", "ocfs2_dlmfs", "hpfs", "proc", "afs", "reiserfs", "jffs2", "romfs", "aio", "sysv", "v7", "udf", "ceph", "pstore", "adfs", "9p", "hostfs", "squashfs", "cramfs", "iso9660", "coda", "nilfs2", "logfs", "overlay", "f2fs", "omfs", "ubifs", "openpromfs", "bpf", "cgroup", "cgroup2", "cpuset", "mqueue", "aufs", "selinuxfs", "dax", "erofs"
 
 blockdev_filename [
 	filename	filename
@@ -77,6 +104,8 @@ syz_mount_image$cifs(fs ptr[in, string["cifs"]], dir ptr[in, filename], size int
 
 syz_mount_image$ceph(fs ptr[in, string["ceph"]], dir ptr[in, filename], size intptr, nsegs len[segments], segments ptr[in, array[fs_image_segment]], flags flags[mount_flags], opts ptr[in, string])
 
+syz_mount_image$erofs(fs ptr[in, string["erofs"]], dir ptr[in, filename], size intptr, nsegs len[segments], segments ptr[in, array[fs_image_segment]], flags flags[mount_flags], opts ptr[in, fs_options[erofs_options]])
+
 fs_image_segment {
 	data	ptr[in, array[int8]]
 	size	len[data, intptr]
@@ -84,8 +113,9 @@ fs_image_segment {
 }
 
 type fs_options[ELEMS] {
-	elems	array[fs_opt_elem[ELEMS]]
-	null	const[0, int8]
+	elems		array[fs_opt_elem[ELEMS]]
+	security	array[fs_opt_elem[fs_options_security]]
+	null		const[0, int8]
 } [packed]
 
 type fs_opt_elem[ELEMS] {
@@ -99,6 +129,11 @@ type fs_opt[NAME, TYPE] {
 	val	TYPE
 } [packed]
 
+type fs_opt_nodelim[NAME, TYPE] {
+	name	stringnoz[NAME]
+	val	TYPE
+} [packed]
+
 type fs_opt_str[NAME] fs_opt[NAME, stringnoz]
 type fs_opt_dec[NAME, VAL] fs_opt[NAME, fmt[dec, VAL]]
 type fs_opt_hex[NAME, VAL] fs_opt[NAME, fmt[hex, VAL]]
@@ -109,6 +144,71 @@ type fs_opt_codepage[NAME] fs_opt[NAME, stringnoz[codepages_names]]
 type fs_opt_cp_num[NAME] fs_opt[NAME, stringnoz[codepage_nums]]
 
 fs_opt_digits_suffix = '-', 'x', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'k', 'm', 'g', 't', 'p', 'e'
+
+fs_options_security [
+# SELinux options:
+	context			fs_opt["context", stringnoz[selinux_user_context]]
+	fscontext		fs_opt["fscontext", stringnoz[selinux_user_context]]
+	rootcontext		fs_opt["rootcontext", stringnoz[selinux_user_context]]
+	defcontext		fs_opt["defcontext", stringnoz[selinux_user_context]]
+	seclabel		stringnoz["seclabel"]
+
+# Smack options:
+	smackfsdef		fs_opt_str["smackfsdef"]
+	smackfsfloor		fs_opt_str["smackfsfloor"]
+	smackfshat		fs_opt_str["smackfshat"]
+	smackfsroot		fs_opt_str["smackfsroot"]
+	smackfstransmute	fs_opt_str["smackfstransmute"]
+
+# IMA options:
+	measure			stringnoz["measure"]
+	dont_measure		stringnoz["dont_measure"]
+	appraise		stringnoz["appraise"]
+	dont_appraise		stringnoz["dont_appraise"]
+	audit			stringnoz["audit"]
+	hash			stringnoz["hash"]
+	dont_hash		stringnoz["dont_hash"]
+	permit_directio		stringnoz["permit_directio"]
+	obj_user		fs_opt_str["obj_user"]
+	obj_role		fs_opt_str["obj_role"]
+	obj_type		fs_opt_str["obj_type"]
+	subj_user		fs_opt_str["subj_user"]
+	subj_role		fs_opt_str["subj_role"]
+	subj_type		fs_opt_str["subj_type"]
+	func			fs_opt["func", stringnoz[ima_funcs]]
+	mask			fs_opt["mask", stringnoz[ima_masks]]
+	fsmagic			fs_opt_hex["fsmagic", intptr]
+	fsname			fs_opt_str["fsname"]
+	fsuuid			fs_opt["fsuuid", uuid_str]
+	uid_eq			fs_opt_dec["uid", uid]
+	euid_eq			fs_opt_dec["euid", uid]
+	fowner_eq		fs_opt_dec["fowner", uid]
+	uid_gt			fs_opt_nodelim["uid>", fmt[dec, uid]]
+	euid_gt			fs_opt_nodelim["euid>", fmt[dec, uid]]
+	fowner_gt		fs_opt_nodelim["fowner>", fmt[dec, uid]]
+	uid_lt			fs_opt_nodelim["uid<", fmt[dec, uid]]
+	euid_lt			fs_opt_nodelim["euid<", fmt[dec, uid]]
+	fowner_lt		fs_opt_nodelim["fowner<", fmt[dec, uid]]
+	appraise_type		stringnoz["appraise_type=imasig"]
+	pcr			fs_opt_dec["pcr", int64[0:64]]
+] [varlen]
+
+uuid_str {
+	p0	array[flags[hex_chars, int8], 8]
+	d0	const['-', int8]
+	p1	array[flags[hex_chars, int8], 4]
+	d1	const['-', int8]
+	p2	array[flags[hex_chars, int8], 4]
+	d2	const['-', int8]
+	p3	array[flags[hex_chars, int8], 4]
+	d3	const['-', int8]
+	p4	array[flags[hex_chars, int8], 8]
+}
+
+hex_chars = '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'
+
+ima_funcs = "FILE_CHECK", "PATH_CHECK", "MODULE_CHECK", "FIRMWARE_CHECK", "FILE_MMAP", "MMAP_CHECK", "BPRM_CHECK", "CREDS_CHECK", "KEXEC_KERNEL_CHECK", "KEXEC_INITRAMFS_CHECK", "POLICY_CHECK"
+ima_masks = "MAY_EXEC", "MAY_WRITE", "MAY_READ", "MAY_APPEND", "^MAY_EXEC", "^MAY_WRITE", "^MAY_READ", "^MAY_APPEND"
 
 msdos_options [
 	fat	fat_options
@@ -607,6 +707,14 @@ overlay_options [
 	xino_auto		stringnoz["xino=auto"]
 	metacopy_on		stringnoz["metacopy=on"]
 	metacopy_off		stringnoz["metacopy=off"]
+] [varlen]
+
+erofs_options [
+	user_xattr	stringnoz["user_xattr"]
+	nouser_xattr	stringnoz["nouser_xattr"]
+	acl		stringnoz["acl"]
+	noacl		stringnoz["noacl"]
+	fault_injection	fs_opt_hex["fault_injection", int32]
 ] [varlen]
 
 codepage_nums = "1250", "1251", "1255", "437", "737", "775", "850", "852", "855", "857", "860", "861", "862", "863", "864", "865", "866", "869", "874", "932", "936", "949", "950"

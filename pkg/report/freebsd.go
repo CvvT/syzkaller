@@ -6,6 +6,8 @@ package report
 import (
 	"bytes"
 	"regexp"
+
+	"github.com/google/syzkaller/sys/targets"
 )
 
 type freebsd struct {
@@ -14,7 +16,8 @@ type freebsd struct {
 	ignores   []*regexp.Regexp
 }
 
-func ctorFreebsd(kernelSrc, kernelObj string, ignores []*regexp.Regexp) (Reporter, []string, error) {
+func ctorFreebsd(target *targets.Target, kernelSrc, kernelObj string,
+	ignores []*regexp.Regexp) (Reporter, []string, error) {
 	ctx := &freebsd{
 		kernelSrc: kernelSrc,
 		kernelObj: kernelObj,
@@ -40,14 +43,12 @@ func (ctx *freebsd) Parse(output []byte) *Report {
 			next = len(output)
 		}
 		for _, oops1 := range freebsdOopses {
-			match := matchOops(output[pos:next], oops1, ctx.ignores)
-			if match == -1 {
+			if !matchOops(output[pos:next], oops1, ctx.ignores) {
 				continue
 			}
 			if oops == nil {
 				oops = oops1
 				rep.StartPos = pos
-				rep.Title = string(output[pos+match : next])
 			}
 			rep.EndPos = next
 		}
@@ -91,6 +92,14 @@ var freebsdOopses = []*oops{
 					"\\+{{ADDR}}\\r?\\n)*#[0-9]+ {{ADDR}} at {{FUNC}}{{ADDR}}"),
 				fmt: "Fatal trap %[1]v in %[2]v",
 			},
+			{
+				title: compile("(Fatal trap [0-9]+:.*) while in (?:user|kernel) mode\\r?\\n(?:.*\\n)+?" +
+					"KDB: stack backtrace:\\r?\\n" +
+					"(?:[a-zA-Z0-9_]+\\(\\) at [a-zA-Z0-9_]+\\+0x.*\\r?\\n)*" +
+					"--- trap 0x[0-9a-fA-F]+.* ---\\r?\\n" +
+					"([a-zA-Z0-9_]+)\\(\\) at [a-zA-Z0-9_]+\\+0x.*\\r?\\n"),
+				fmt: "%[1]v in %[2]v",
+			},
 		},
 		[]*regexp.Regexp{},
 	},
@@ -100,6 +109,15 @@ var freebsdOopses = []*oops{
 			{
 				title: compile("panic: ffs_write: type {{ADDR}} [0-9]+ \\([0-9]+,[0-9]+\\)"),
 				fmt:   "panic: ffs_write: type ADDR X (Y,Z)",
+			},
+			{
+				title: compile("panic: ([a-zA-Z]+[a-zA-Z0-9_]*\\(\\)) of destroyed (mutex|rmlock|rwlock|sx) @ " +
+					"/.*/(sys/.*:[0-9]+)"),
+				fmt: "panic: %[1]v of destroyed %[2]v at %[3]v",
+			},
+			{
+				title: compile("panic: No chunks on the queues for sid [0-9]+\\.\\r?\\n"),
+				fmt:   "panic: sctp: no chunks on the queues",
 			},
 		},
 		[]*regexp.Regexp{},

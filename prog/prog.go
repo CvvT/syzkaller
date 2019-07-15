@@ -166,6 +166,13 @@ func (arg *DataArg) Data() []byte {
 	return arg.data
 }
 
+func (arg *DataArg) SetData(data []byte) {
+	if arg.Type().Dir() == DirOut {
+		panic("setting data of output data arg")
+	}
+	arg.data = append([]byte{}, data...)
+}
+
 // Used for StructType and ArrayType.
 // Logical group of args (struct or array).
 type GroupArg struct {
@@ -364,7 +371,7 @@ func removeArg(arg0 Arg) {
 			delete(uses, a)
 		}
 		for arg1 := range a.uses {
-			arg2 := arg1.Type().makeDefaultArg().(*ResultArg)
+			arg2 := arg1.Type().DefaultArg().(*ResultArg)
 			replaceResultArg(arg1, arg2)
 		}
 	})

@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/google/syzkaller/pkg/symbolizer"
+	"github.com/google/syzkaller/sys/targets"
 	"github.com/ianlancetaylor/demangle"
 )
 
@@ -38,12 +39,13 @@ var (
 	}
 )
 
-func ctorFuchsia(kernelSrc, kernelObj string, ignores []*regexp.Regexp) (Reporter, []string, error) {
+func ctorFuchsia(target *targets.Target, kernelSrc, kernelObj string,
+	ignores []*regexp.Regexp) (Reporter, []string, error) {
 	ctx := &fuchsia{
 		ignores: ignores,
 	}
 	if kernelObj != "" {
-		ctx.obj = filepath.Join(kernelObj, "zircon.elf")
+		ctx.obj = filepath.Join(kernelObj, target.KernelObject)
 	}
 	suppressions := []string{
 		"fatal exception: process /tmp/syz-fuzzer", // OOM presumably
@@ -63,14 +65,16 @@ func (ctx *fuchsia) Parse(output []byte) *Report {
 		return nil
 	}
 	rep.Output = output
-	rep.Report = ctx.shortenReport(rep.Report)
+	if report := ctx.shortenReport(rep.Report); len(report) != 0 {
+		rep.Report = report
+	}
 	return rep
 }
 
 func (ctx *fuchsia) shortenReport(report []byte) []byte {
 	out := new(bytes.Buffer)
 	for s := bufio.NewScanner(bytes.NewReader(report)); s.Scan(); {
-		line := s.Bytes()
+		line := zirconLinePrefix.ReplaceAll(s.Bytes(), nil)
 		if matchesAny(line, zirconUnrelated) {
 			continue
 		}
@@ -88,7 +92,7 @@ func (ctx *fuchsia) symbolize(output []byte) []byte {
 	defer symb.Close()
 	out := new(bytes.Buffer)
 	for s := bufio.NewScanner(bytes.NewReader(output)); s.Scan(); {
-		line := zirconLinePrefix.ReplaceAll(s.Bytes(), nil)
+		line := s.Bytes()
 		if bytes.Contains(line, zirconAssertFailed) && len(line) == 127 {
 			// This is super hacky: but zircon splits the most important information in long assert lines
 			// (and they are always long) into several lines in irreversible way. Try to restore full line.
@@ -283,7 +287,7 @@ var zirconOopses = []*oops{
 		[]oopsFormat{
 			{
 				title:        compile("welcome to Zircon"),
-				fmt:          "unexpected kernel reboot",
+				fmt:          unexpectedKernelReboot,
 				noStackTrace: true,
 			},
 		},
@@ -313,5 +317,18 @@ var zirconOopses = []*oops{
 		[]*regexp.Regexp{
 			compile("<== fatal exception: process .+?syz.+?\\["),
 		},
+	},
+	{
+		// Panics in Go services.
+		[]byte("panic: "),
+		[]oopsFormat{
+			{
+				title:        compile("panic: .*"),
+				report:       compile("panic: (.*)(?:.*\\n)+?.* goroutine"),
+				fmt:          "panic: %[1]v",
+				noStackTrace: true,
+			},
+		},
+		[]*regexp.Regexp{},
 	},
 }

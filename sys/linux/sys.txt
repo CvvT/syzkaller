@@ -5,13 +5,10 @@
 
 include <linux/socket.h>
 include <linux/ptrace.h>
-include <linux/fanotify.h>
-include <linux/inotify.h>
 include <linux/resource.h>
 include <linux/stat.h>
 include <linux/mman.h>
 include <linux/time.h>
-include <linux/prctl.h>
 include <linux/mount.h>
 include <linux/fs.h>
 include <linux/eventpoll.h>
@@ -49,11 +46,12 @@ include <linux/kcmp.h>
 include <linux/syslog.h>
 include <uapi/linux/memfd.h>
 include <uapi/linux/module.h>
-include <asm/prctl.h>
 include <linux/ioprio.h>
 include <linux/membarrier.h>
 include <uapi/linux/kcov.h>
 include <uapi/linux/membarrier.h>
+include <uapi/linux/capability.h>
+include <uapi/linux/suspend_ioctls.h>
 
 resource fd[int32]: -1, AT_FDCWD
 resource fd_dir[fd]
@@ -125,6 +123,7 @@ eventfd2(initval int32, flags flags[eventfd_flags]) fd_event
 read$eventfd(fd fd_event, val ptr[out, int64], len len[val])
 write$eventfd(fd fd_event, val ptr[in, int64], len len[val])
 
+# NEED: offset must be page-aligned. Or does the syscall even accept offset in pages?
 mmap(addr vma, len len[addr], prot flags[mmap_prot], flags flags[mmap_flags], fd fd, offset fileoff)
 munmap(addr vma, len len[addr])
 mremap(addr vma, len len[addr], newlen len[newaddr], flags flags[mremap_flags], newaddr vma)
@@ -145,9 +144,13 @@ mlock2(addr vma, size len[addr], flags flags[mlock_flags])
 munlock(addr vma, size len[addr])
 mlockall(flags flags[mlockall_flags])
 munlockall()
-memfd_create(name ptr[in, string], flags flags[memfd_flags]) fd
 kcmp(pid1 pid, pid2 pid, type flags[kcmp_flags], fd1 fd, fd2 fd)
 kcmp$KCMP_EPOLL_TFD(pid1 pid, pid2 pid, type const[KCMP_EPOLL_TFD], fd1 fd, idx2 ptr[in, kcmp_epoll_slot])
+
+resource fd_memfd[fd]
+memfd_create(name ptr[in, string], flags flags[memfd_flags]) fd_memfd
+memfd_flags = MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_HUGETLB
+_ = MFD_HUGE_SHIFT, MFD_HUGE_MASK, MFD_HUGE_64KB, MFD_HUGE_512KB, MFD_HUGE_1MB, MFD_HUGE_2MB, MFD_HUGE_8MB, MFD_HUGE_16MB
 
 resource pkey[int32]: -1
 pkey_alloc(flags const[0], val flags[pkey_flags]) pkey
@@ -210,19 +213,6 @@ seccomp_metadata {
 
 capget(hdr ptr[in, cap_header], data ptr[in, cap_data])
 capset(hdr ptr[in, cap_header], data ptr[in, cap_data])
-
-prctl$void(option flags[prctl_code_void])
-prctl$intptr(option flags[prctl_code_intptr], arg intptr)
-prctl$getreaper(option flags[prctl_code_getreaper], arg ptr[out, intptr])
-prctl$setendian(option const[PR_SET_ENDIAN], arg flags[prctl_endian])
-prctl$setfpexc(option const[PR_SET_FPEXC], arg flags[prctl_fpexc])
-prctl$setname(option const[PR_SET_NAME], name ptr[in, string])
-prctl$getname(option const[PR_GET_NAME], name buffer[out])
-prctl$setptracer(option const[PR_SET_PTRACER], pid pid)
-prctl$seccomp(option const[PR_SET_SECCOMP], mode flags[prctl_seccomp_mode], prog ptr[in, sock_fprog])
-prctl$setmm(option1 const[PR_SET_MM], option2 flags[prctl_mm_option], val vma)
-
-arch_prctl(code flags[arch_prctl_code], addr buffer[in])
 seccomp(op flags[seccomp_op], flags flags[seccomp_flags], prog ptr[in, sock_fprog])
 
 resource fd_mq[fd]
@@ -284,17 +274,6 @@ personality(persona flags[personality_flags])
 #getsid(pid pid) pid
 #setsid() pid
 
-resource fd_inotify[fd]
-resource fd_fanotify[fd]
-resource inotifydesc[int32]
-inotify_init() fd_inotify
-inotify_init1(flags flags[inotify_flags]) fd_inotify
-inotify_add_watch(fd fd_inotify, file ptr[in, filename], mask flags[inotify_mask]) inotifydesc
-inotify_rm_watch(fd fd_inotify, wd inotifydesc)
-fanotify_init(flags flags[fanotify_flags], events flags[fanotify_events]) fd_fanotify
-fanotify_mark(fd fd_fanotify, flags flags[fanotify_mark], mask flags[fanotify_mask], fddir fd_dir, path ptr[in, filename])
-ioctl$INOTIFY_IOC_SETNEXTWD(fd fd_inotify, cmd const[INOTIFY_IOC_SETNEXTWD], arg intptr)
-
 link(old ptr[in, filename], new ptr[in, filename])
 linkat(oldfd fd_dir, old ptr[in, filename], newfd fd_dir, new ptr[in, filename], flags flags[linkat_flags])
 symlinkat(old ptr[in, filename], newfd fd_dir, new ptr[in, filename])
@@ -340,7 +319,7 @@ init_module(mod ptr[in, string], len len[mod], args ptr[in, string])
 finit_module(fd fd, args ptr[in, string], flags flags[finit_module_flags])
 delete_module(name ptr[in, string], flags flags[delete_module_flags])
 kexec_load(entry intptr, nr_segments len[segments], segments ptr[in, array[kexec_segment]], flags flags[kexec_load_flags])
-syslog(cmd flags[syslog_cmd], buf buffer[out, opt], len len[buf])
+syslog(cmd flags[syslog_cmd], buf ptr[out, array[int8], opt], len len[buf])
 uname(buf buffer[out])
 sysinfo(info buffer[out])
 ustat(dev intptr, buf ptr[out, ustat])
@@ -420,7 +399,7 @@ getrandom(buf buffer[out], len len[buf], flags flags[getrandom_flags])
 
 membarrier(cmd flags[membarrier_cmd], flags const[0])
 
-membarrier_cmd = MEMBARRIER_CMD_GLOBAL, MEMBARRIER_CMD_GLOBAL_EXPEDITED, MEMBARRIER_CMD_PRIVATE_EXPEDITED, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE
+membarrier_cmd = MEMBARRIER_CMD_GLOBAL, MEMBARRIER_CMD_GLOBAL_EXPEDITED, MEMBARRIER_CMD_PRIVATE_EXPEDITED, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED, MEMBARRIER_CMD_PRIVATE_EXPEDITED_SYNC_CORE, MEMBARRIER_CMD_REGISTER_PRIVATE_EXPEDITED_SYNC_CORE, MEMBARRIER_CMD_QUERY, MEMBARRIER_CMD_REGISTER_GLOBAL_EXPEDITED, MEMBARRIER_CMD_SHARED
 
 rseq(rseq ptr[in, rseq], rseq_len bytesize[rseq], flags boolptr, sig const[0])
 
@@ -443,7 +422,15 @@ rseq_cs_flags = RSEQ_CS_FLAG_NO_RESTART_ON_PREEMPT, RSEQ_CS_FLAG_NO_RESTART_ON_S
 
 syz_open_procfs(pid pid, file ptr[in, string[procfs_file]]) fd
 
+# TODO: some of net files are only available in the init namespace (e.g. bluetooth bnep and hci).
+# We could find some way to open these files in the init namespace
+# esp. taking into account that we create bluetooth sockets in init namespace.
 procfs_file = "auxv", "cmdline", "environ", "autogroup", "cgroup", "clear_refs", "comm", "coredump_filter", "cpuset", "gid_map", "io", "limits", "loginuid", "maps", "mountinfo", "mounts", "mountstats", "numa_maps", "oom_adj", "oom_score", "oom_score_adj", "pagemap", "personality", "projid_map", "sched", "schedstat", "sessionid", "setgroups", "smaps", "smaps_rollup", "stack", "stat", "statm", "status", "syscall", "timers", "uid_map", "wchan", "map_files", "attr", "attr/current", "attr/exec", "attr/fscreate", "attr/keycreate", "attr/prev", "attr/sockcreate", "ns", "children", "task", "fd", "fd/3", "fd/4", "fdinfo", "fdinfo/3", "fdinfo/4", "net", "net/anycast6", "net/arp", "net/bnep", "net/connector", "net/dev", "net/dev_mcast", "net/dev_snmp6", "net/fib_trie", "net/fib_triestat", "net/hci", "net/icmp", "net/icmp6", "net/if_inet6", "net/igmp", "net/igmp6", "net/ip6_flowlabel", "net/ip6_mr_cache", "net/ip6_mr_vif", "net/ip6_tables_matches", "net/ip6_tables_names", "net/ip6_tables_targets", "net/ip_mr_cache", "net/ip_mr_vif", "net/ip_tables_matches", "net/ip_tables_names", "net/ip_tables_targets", "net/ipv6_route", "net/ipx", "net/l2cap", "net/llc", "net/mcfilter", "net/mcfilter6", "net/netfilter", "net/netlink", "net/netstat", "net/nfsfs", "net/packet", "net/protocols", "net/psched", "net/ptype", "net/raw", "net/raw6", "net/rfcomm", "net/route", "net/rpc", "net/rt6_stats", "net/rt_acct", "net/rt_cache", "net/sco", "net/sctp", "net/snmp", "net/snmp6", "net/sockstat", "net/sockstat6", "net/softnet_stat", "net/stat", "net/tcp", "net/tcp6", "net/udp", "net/udp6", "net/udplite", "net/udplite6", "net/unix", "net/wireless", "net/xfrm_stat", "net/ip_vs", "net/ip_vs_stats", "net/ip_vs_stats_percpu"
+
+resource fd_pidfd[fd]
+
+openat$pidfd(fd const[AT_FDCWD], file ptr[in, string["/proc/self"]], flags flags[open_flags], mode const[0]) fd_pidfd
+pidfd_send_signal(fd fd_pidfd, sig signalno, info ptr[in, siginfo], flags const[0])
 
 # Uncomment on your own account.
 #syz_open_dev$char(dev const[0xc], major intptr, minor intptr) fd
@@ -457,7 +444,7 @@ procfs_file = "auxv", "cmdline", "environ", "autogroup", "cgroup", "clear_refs",
 # These devices are relatively safe (don't reboot and don't corrupt kernel memory).
 # They need a more comprehensive support. But let at least open them for now,
 # maybe fuzzer will be able to skrew them in a useful way.
-syz_open_dev$floppy(dev ptr[in, string["/dev/fd#"]], id intptr, flags flags[open_flags]) fd
+# TODO: all these devices returning just fd need proper interface descriptions.
 syz_open_dev$vcsn(dev ptr[in, string["/dev/vcs#"]], id intptr, flags flags[open_flags]) fd
 syz_open_dev$vcsa(dev ptr[in, string["/dev/vcsa#"]], id intptr, flags flags[open_flags]) fd
 syz_open_dev$usbmon(dev ptr[in, string["/dev/usbmon#"]], id intptr, flags flags[open_flags]) fd
@@ -473,24 +460,18 @@ syz_open_dev$usb(dev ptr[in, string["/dev/bus/usb/00#/00#"]], id intptr, flags f
 syz_open_dev$sndhw(dev ptr[in, string["/dev/snd/hwC#D#"]], id intptr, flags flags[open_flags]) fd
 syz_open_dev$sndpcmc(dev ptr[in, string["/dev/snd/pcmC#D#c"]], id intptr, flags flags[open_flags]) fd
 syz_open_dev$sndpcmp(dev ptr[in, string["/dev/snd/pcmC#D#p"]], id intptr, flags flags[open_flags]) fd
+syz_open_dev$media(dev ptr[in, string["/dev/media#"]], id intptr, flags flags[open_flags]) fd
 
 openat$null(fd const[AT_FDCWD], file ptr[in, string["/dev/null"]], flags flags[open_flags], mode const[0]) fd
 openat$zero(fd const[AT_FDCWD], file ptr[in, string["/dev/zero"]], flags flags[open_flags], mode const[0]) fd
 openat$full(fd const[AT_FDCWD], file ptr[in, string["/dev/full"]], flags flags[open_flags], mode const[0]) fd
-openat$snapshot(fd const[AT_FDCWD], file ptr[in, string["/dev/snapshot"]], flags flags[open_flags], mode const[0]) fd
 openat$vga_arbiter(fd const[AT_FDCWD], file ptr[in, string["/dev/vga_arbiter"]], flags flags[open_flags], mode const[0]) fd
-openat$vhci(fd const[AT_FDCWD], file ptr[in, string["/dev/vhci"]], flags flags[open_flags], mode const[0]) fd
-openat$rtc(fd const[AT_FDCWD], file ptr[in, string["/dev/rtc0"]], flags flags[open_flags], mode const[0]) fd
-openat$rfkill(fd const[AT_FDCWD], file ptr[in, string["/dev/rfkill"]], flags flags[open_flags], mode const[0]) fd
 openat$qat_adf_ctl(fd const[AT_FDCWD], file ptr[in, string["/dev/qat_adf_ctl"]], flags flags[open_flags], mode const[0]) fd
-openat$ppp(fd const[AT_FDCWD], file ptr[in, string["/dev/ppp"]], flags flags[open_flags], mode const[0]) fd
 openat$mixer(fd const[AT_FDCWD], file ptr[in, string["/dev/mixer"]], flags flags[open_flags], mode const[0]) fd
 openat$irnet(fd const[AT_FDCWD], file ptr[in, string["/dev/irnet"]], flags flags[open_flags], mode const[0]) fd
 openat$hwrng(fd const[AT_FDCWD], file ptr[in, string["/dev/hwrng"]], flags flags[open_flags], mode const[0]) fd
 openat$hpet(fd const[AT_FDCWD], file ptr[in, string["/dev/hpet"]], flags flags[open_flags], mode const[0]) fd
-openat$hidraw0(fd const[AT_FDCWD], file ptr[in, string["/dev/hidraw0"]], flags flags[open_flags], mode const[0]) fd
 openat$fb0(fd const[AT_FDCWD], file ptr[in, string["/dev/fb0"]], flags flags[open_flags], mode const[0]) fd
-openat$capi20(fd const[AT_FDCWD], file ptr[in, string["/dev/capi20"]], flags flags[open_flags], mode const[0]) fd
 openat$autofs(fd const[AT_FDCWD], file ptr[in, string["/dev/autofs"]], flags flags[open_flags], mode const[0]) fd
 openat$keychord(fd const[AT_FDCWD], file ptr[in, string["/dev/keychord"]], flags flags[open_flags], mode const[0]) fd
 openat$zygote(fd const[AT_FDCWD], file ptr[in, string["/dev/socket/zygote"]], flags flags[open_flags], mode const[0]) fd
@@ -503,6 +484,16 @@ openat$sequencer2(fd const[AT_FDCWD], file ptr[in, string["/dev/sequencer2"]], f
 openat$dsp(fd const[AT_FDCWD], file ptr[in, string["/dev/dsp"]], flags flags[open_flags], mode const[0]) fd
 openat$audio(fd const[AT_FDCWD], file ptr[in, string["/dev/audio"]], flags flags[open_flags], mode const[0]) fd
 openat$xenevtchn(fd const[AT_FDCWD], file ptr[in, string["/dev/xen/evtchn"]], flags flags[open_flags], mode const[0]) fd
+openat$dlm_control(fd const[AT_FDCWD], file ptr[in, string["/dev/dlm-control"]], flags flags[open_flags], mode const[0]) fd
+openat$dlm_monitor(fd const[AT_FDCWD], file ptr[in, string["/dev/dlm-monitor"]], flags flags[open_flags], mode const[0]) fd
+openat$dlm_plock(fd const[AT_FDCWD], file ptr[in, string["/dev/dlm_plock"]], flags flags[open_flags], mode const[0]) fd
+openat$vfio(fd const[AT_FDCWD], file ptr[in, string["/dev/vfio/vfio"]], flags flags[open_flags], mode const[0]) fd
+openat$btrfs_control(fd const[AT_FDCWD], file ptr[in, string["/dev/btrfs-control"]], flags flags[open_flags], mode const[0]) fd
+openat$ubi_ctrl(fd const[AT_FDCWD], file ptr[in, string["/dev/ubi_ctrl"]], flags flags[open_flags], mode const[0]) fd
+openat$cachefiles(fd const[AT_FDCWD], file ptr[in, string["/dev/cachefiles"]], flags flags[open_flags], mode const[0]) fd
+
+openat$snapshot(fd const[AT_FDCWD], file ptr[in, string["/dev/snapshot"]], flags flags[open_flags], mode const[0]) fd
+_ = SNAPSHOT_FREEZE, SNAPSHOT_UNFREEZE
 
 pipefd {
 	rfd	fd
@@ -533,8 +524,8 @@ stat {
 	mnsec	int32
 	ctime	int32
 	cnsec	int32
-	pad1	int32
-	pad2	int32
+	pad1	const[0, int32]
+	pad2	const[0, int32]
 }
 
 statx {
@@ -628,7 +619,7 @@ sigevent_u [
 define SIGEVENT_SIZE	sizeof(struct sigevent)
 
 sigevent_thread {
-# TODO: this is function pointer and pthread_attr_t (?)
+# NEED: this is function pointer and pthread_attr_t (?)
 	func	buffer[in]
 	attr	buffer[in]
 }
@@ -753,9 +744,9 @@ siginfo {
 	signo	signalno
 	errno	int32
 	code	int32
-	pad3	int32
-# actual size is 128 bytes
-}
+} [size[SIGINFO_SIZE]]
+
+define SIGINFO_SIZE	sizeof(struct siginfo)
 
 timex {
 	stuff0	intptr
@@ -859,10 +850,9 @@ mmap_flags = MAP_SHARED, MAP_PRIVATE, MAP_32BIT, MAP_ANONYMOUS, MAP_DENYWRITE, M
 mremap_flags = MREMAP_MAYMOVE, MREMAP_FIXED
 mbind_mode = MPOL_DEFAULT, MPOL_BIND, MPOL_INTERLEAVE, MPOL_PREFERRED, MPOL_F_STATIC_NODES, MPOL_F_RELATIVE_NODES
 mbind_flags = MPOL_MF_STRICT, MPOL_MF_MOVE, MPOL_MF_MOVE_ALL
-memfd_flags = MFD_CLOEXEC, MFD_ALLOW_SEALING
 pipe_flags = O_NONBLOCK, O_CLOEXEC, O_DIRECT
 mlock_flags = MLOCK_ONFAULT
-mlockall_flags = MCL_CURRENT, MCL_FUTURE
+mlockall_flags = MCL_CURRENT, MCL_FUTURE, MCL_ONFAULT
 dup_flags = O_CLOEXEC
 splice_flags = SPLICE_F_MOVE, SPLICE_F_NONBLOCK, SPLICE_F_MORE, SPLICE_F_GIFT
 seek_whence = SEEK_SET, SEEK_CUR, SEEK_END, SEEK_DATA, SEEK_HOLE
@@ -870,23 +860,15 @@ signalfd_flags = SFD_NONBLOCK, SFD_CLOEXEC
 eventfd_flags = EFD_CLOEXEC, EFD_NONBLOCK, EFD_SEMAPHORE
 timerfd_create_flags = TFD_NONBLOCK, TFD_CLOEXEC
 timerfd_settime_flags = TFD_TIMER_ABSTIME
-clock_type = CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW, CLOCK_BOOTTIME, CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID
+clock_type = CLOCK_REALTIME, CLOCK_REALTIME_COARSE, CLOCK_MONOTONIC, CLOCK_MONOTONIC_COARSE, CLOCK_MONOTONIC_RAW, CLOCK_BOOTTIME, CLOCK_PROCESS_CPUTIME_ID, CLOCK_THREAD_CPUTIME_ID, CLOCK_REALTIME_ALARM, CLOCK_BOOTTIME_ALARM
 sigev_notify = SIGEV_NONE, SIGEV_SIGNAL, SIGEV_THREAD, SIGEV_THREAD_ID
-cap_version = 0x19980330, 0x20071026, 0x20080522
-prctl_code_void = PR_GET_DUMPABLE, PR_GET_KEEPCAPS, PR_GET_NO_NEW_PRIVS, PR_GET_SECCOMP, PR_GET_SECUREBITS, PR_GET_TIMERSLACK, PR_GET_TIMING, PR_TASK_PERF_EVENTS_DISABLE, PR_TASK_PERF_EVENTS_ENABLE, PR_MCE_KILL_GET
-prctl_code_intptr = PR_CAPBSET_READ, PR_CAPBSET_DROP, PR_SET_CHILD_SUBREAPER, PR_SET_DUMPABLE, PR_SET_FPEMU, PR_SET_KEEPCAPS, PR_SET_NO_NEW_PRIVS, PR_SET_PDEATHSIG, PR_SET_SECUREBITS, PR_SET_TIMERSLACK, PR_SET_TIMING, PR_SET_TSC, PR_SET_UNALIGN, PR_MCE_KILL
-prctl_code_getreaper = PR_GET_CHILD_SUBREAPER, PR_GET_ENDIAN, PR_GET_FPEMU, PR_GET_FPEXC, PR_GET_PDEATHSIG, PR_GET_TID_ADDRESS, PR_GET_TSC, PR_GET_UNALIGN
-prctl_endian = PR_ENDIAN_BIG, PR_ENDIAN_LITTLE, PR_ENDIAN_PPC_LITTLE
-prctl_fpexc = PR_FP_EXC_SW_ENABLE, PR_FP_EXC_DIV, PR_FP_EXC_OVF, PR_FP_EXC_UND, PR_FP_EXC_RES, PR_FP_EXC_INV, PR_FP_EXC_DISABLED, PR_FP_EXC_NONRECOV, PR_FP_EXC_ASYNC, PR_FP_EXC_PRECISE
-prctl_seccomp_mode = SECCOMP_MODE_DISABLED, SECCOMP_MODE_STRICT, SECCOMP_MODE_FILTER
-prctl_mm_option = PR_SET_MM_START_CODE, PR_SET_MM_END_CODE, PR_SET_MM_START_DATA, PR_SET_MM_END_DATA, PR_SET_MM_START_STACK, PR_SET_MM_START_BRK, PR_SET_MM_BRK
-arch_prctl_code = ARCH_SET_FS, ARCH_GET_FS, ARCH_SET_GS, ARCH_GET_GS
+cap_version = _LINUX_CAPABILITY_VERSION_1, _LINUX_CAPABILITY_VERSION_2, _LINUX_CAPABILITY_VERSION_3
 epoll_flags = EPOLL_CLOEXEC
 epoll_ev = POLLIN, POLLOUT, POLLRDHUP, POLLPRI, POLLERR, POLLHUP, EPOLLET, EPOLLONESHOT, EPOLLEXCLUSIVE, EPOLLWAKEUP
 pollfd_events = POLLIN, POLLPRI, POLLOUT, POLLERR, POLLHUP, POLLNVAL, POLLRDNORM, POLLRDBAND, POLLWRNORM, POLLWRBAND, POLLMSG, POLLREMOVE, POLLRDHUP, POLLFREE, POLL_BUSY_LOOP
-mknod_mode = S_IFREG, S_IFCHR, S_IFBLK, S_IFIFO, S_IFSOCK, S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH
+mknod_mode = S_IFREG, S_IFCHR, S_IFBLK, S_IFIFO, S_IFSOCK, S_IRUSR, S_IWUSR, S_IXUSR, S_IRGRP, S_IWGRP, S_IXGRP, S_IROTH, S_IWOTH, S_IXOTH, S_ISUID, S_ISGID, S_ISVTX
 at_flags = AT_EMPTY_PATH, AT_SYMLINK_NOFOLLOW, AT_SYMLINK_FOLLOW, AT_NO_AUTOMOUNT, AT_EMPTY_PATH
-fallocate_mode = 0, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_ZERO_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_UNSHARE_RANGE
+fallocate_mode = 0, FALLOC_FL_KEEP_SIZE, FALLOC_FL_PUNCH_HOLE, FALLOC_FL_COLLAPSE_RANGE, FALLOC_FL_ZERO_RANGE, FALLOC_FL_INSERT_RANGE, FALLOC_FL_UNSHARE_RANGE, FALLOC_FL_NO_HIDE_STALE
 linkat_flags = AT_EMPTY_PATH, AT_SYMLINK_FOLLOW
 unlinkat_flags = 0, AT_REMOVEDIR
 renameat2_flags = RENAME_EXCHANGE, RENAME_NOREPLACE, RENAME_WHITEOUT
@@ -899,21 +881,15 @@ name_to_handle_at_flags = AT_EMPTY_PATH, AT_SYMLINK_FOLLOW
 mq_open_flags = O_RDONLY, O_WRONLY, O_RDWR, O_NONBLOCK, O_CREAT, O_EXCL, O_CREAT
 finit_module_flags = MODULE_INIT_IGNORE_MODVERSIONS, MODULE_INIT_IGNORE_VERMAGIC
 delete_module_flags = O_NONBLOCK, O_TRUNC
-kexec_load_flags = KEXEC_ON_CRASH, KEXEC_PRESERVE_CONTEXT, KEXEC_ARCH_386, KEXEC_ARCH_X86_64, KEXEC_ARCH_PPC, KEXEC_ARCH_PPC64, KEXEC_ARCH_IA_64, KEXEC_ARCH_ARM, KEXEC_ARCH_S390, KEXEC_ARCH_SH, KEXEC_ARCH_MIPS, KEXEC_ARCH_MIPS_LE
-inotify_flags = IN_NONBLOCK, IN_CLOEXEC
-inotify_mask = IN_ACCESS, IN_ATTRIB, IN_CLOSE_WRITE, IN_CLOSE_NOWRITE, IN_CREATE, IN_DELETE, IN_DELETE_SELF, IN_MODIFY, IN_MOVE_SELF, IN_MOVED_FROM, IN_MOVED_TO, IN_OPEN, IN_DONT_FOLLOW, IN_EXCL_UNLINK, IN_MASK_ADD, IN_ONESHOT, IN_ONLYDIR, IN_MASK_CREATE, IN_ISDIR
-fanotify_flags = FAN_CLASS_PRE_CONTENT, FAN_CLASS_CONTENT, FAN_CLASS_NOTIF, FAN_CLOEXEC, FAN_NONBLOCK, FAN_UNLIMITED_QUEUE, FAN_UNLIMITED_MARKS, FAN_ENABLE_AUDIT
-fanotify_events = O_RDONLY, O_WRONLY, O_RDWR, O_LARGEFILE, O_CLOEXEC, O_APPEND, O_DSYNC, O_NOATIME, O_NONBLOCK, O_SYNC
-fanotify_mark = FAN_MARK_ADD, FAN_MARK_REMOVE, FAN_MARK_FLUSH, FAN_MARK_DONT_FOLLOW, FAN_MARK_ONLYDIR, FAN_MARK_MOUNT, FAN_MARK_IGNORED_MASK, FAN_MARK_IGNORED_SURV_MODIFY
-fanotify_mask = FAN_ACCESS, FAN_MODIFY, FAN_CLOSE_WRITE, FAN_CLOSE_NOWRITE, FAN_OPEN, FAN_OPEN_PERM, FAN_ACCESS_PERM, FAN_ONDIR, FAN_EVENT_ON_CHILD
+kexec_load_flags = KEXEC_ON_CRASH, KEXEC_PRESERVE_CONTEXT, KEXEC_ARCH_386, KEXEC_ARCH_X86_64, KEXEC_ARCH_PPC, KEXEC_ARCH_PPC64, KEXEC_ARCH_IA_64, KEXEC_ARCH_ARM, KEXEC_ARCH_S390, KEXEC_ARCH_SH, KEXEC_ARCH_MIPS, KEXEC_ARCH_MIPS_LE, KEXEC_ARCH_DEFAULT
 faccessat_flags = 0x100, 0x200, 0x400, 0x800, 0x1000
-futex_op = FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE
+futex_op = FUTEX_WAIT, FUTEX_WAIT_BITSET, FUTEX_WAKE, FUTEX_REQUEUE, FUTEX_CMP_REQUEUE, FUTEX_WAIT_PRIVATE, FUTEX_WAKE_PRIVATE, FUTEX_WAIT_REQUEUE_PI_PRIVATE, FUTEX_CMP_REQUEUE_PI_PRIVATE
 sync_file_flags = SYNC_FILE_RANGE_WAIT_BEFORE, SYNC_FILE_RANGE_WRITE, SYNC_FILE_RANGE_WAIT_AFTER
 kcmp_flags = KCMP_FILE, KCMP_FILES, KCMP_FS, KCMP_IO, KCMP_SIGHAND, KCMP_SYSVSEM, KCMP_VM
 rusage_who = RUSAGE_SELF, RUSAGE_CHILDREN, RUSAGE_THREAD
 rlimit_type = RLIMIT_AS, RLIMIT_CORE, RLIMIT_CPU, RLIMIT_DATA, RLIMIT_FSIZE, RLIMIT_LOCKS, RLIMIT_MEMLOCK, RLIMIT_MSGQUEUE, RLIMIT_NICE, RLIMIT_NOFILE, RLIMIT_NPROC, RLIMIT_RSS, RLIMIT_RTPRIO, RLIMIT_RTTIME, RLIMIT_SIGPENDING, RLIMIT_STACK
 # The ones that disable console output are intentionally omitted.
-syslog_cmd = SYSLOG_ACTION_CLOSE, SYSLOG_ACTION_OPEN, SYSLOG_ACTION_READ, SYSLOG_ACTION_READ_ALL, SYSLOG_ACTION_READ_CLEAR, SYSLOG_ACTION_CLEAR, SYSLOG_ACTION_CONSOLE_ON, SYSLOG_ACTION_CONSOLE_OFF, SYSLOG_ACTION_SIZE_UNREAD, SYSLOG_ACTION_SIZE_BUFFER
+syslog_cmd = SYSLOG_ACTION_CLOSE, SYSLOG_ACTION_OPEN, SYSLOG_ACTION_READ, SYSLOG_ACTION_READ_ALL, SYSLOG_ACTION_READ_CLEAR, SYSLOG_ACTION_SIZE_UNREAD, SYSLOG_ACTION_SIZE_BUFFER
 ioprio_which_pid = IOPRIO_WHO_PROCESS, IOPRIO_WHO_PGRP
 ioprio_which_uid = IOPRIO_WHO_USER
 personality_flags = PER_LINUX, PER_SVR4, PER_SVR3, PER_OSR5, PER_WYSEV386, PER_ISCR4, PER_BSD, PER_XENIX, PER_LINUX32, PER_IRIX32, PER_IRIXN32, PER_IRIX64, PER_RISCOS, PER_SOLARIS, PER_UW7, PER_OSF4, PER_HPUX, ADDR_NO_RANDOMIZE, MMAP_PAGE_ZERO, ADDR_COMPAT_LAYOUT, READ_IMPLIES_EXEC, ADDR_LIMIT_32BIT, SHORT_INODE, WHOLE_SECONDS, STICKY_TIMEOUTS, ADDR_LIMIT_3GB
@@ -931,7 +907,7 @@ sched_attr_flags = 0
 sched_attr_flags2 = 0, SCHED_FLAG_RESET_ON_FORK
 sched_attr_size = 48
 mempolicy_flags = 0, MPOL_F_MEMS_ALLOWED, MPOL_F_ADDR, MPOL_F_NODE
-ptrace_req = PTRACE_TRACEME, PTRACE_LISTEN, PTRACE_KILL, PTRACE_INTERRUPT, PTRACE_ATTACH, PTRACE_DETACH
+ptrace_req = PTRACE_LISTEN, PTRACE_KILL, PTRACE_INTERRUPT, PTRACE_ATTACH, PTRACE_DETACH
 ptrace_req_peek = PTRACE_PEEKTEXT, PTRACE_PEEKDATA
 ptrace_req_poke = PTRACE_POKETEXT, PTRACE_POKEDATA
 ptrace_req_getregs = PTRACE_GETREGS, PTRACE_GETFPREGS
@@ -942,7 +918,7 @@ pthread_regset = NT_PRSTATUS, NT_PRFPREG, NT_PRPSINFO, NT_TASKSTRUCT, NT_AUXV, N
 ptrace_options = PTRACE_O_EXITKILL, PTRACE_O_TRACECLONE, PTRACE_O_TRACEEXEC, PTRACE_O_TRACEEXIT, PTRACE_O_TRACEFORK, PTRACE_O_TRACESYSGOOD, PTRACE_O_TRACEVFORK, PTRACE_O_TRACEVFORKDONE
 fcntl_dupfd = F_DUPFD, F_DUPFD_CLOEXEC
 fcntl_getflags = F_GETFD, F_GETFL, F_GETSIG, F_GETLEASE, F_GETPIPE_SZ, F_GET_SEALS
-fcntl_lock = F_SETLK, F_SETLKW, F_GETLK
+fcntl_lock = F_SETLK, F_SETLKW, F_GETLK, F_OFD_GETLK, F_OFD_SETLK, F_OFD_SETLKW
 fcntl_flags = FD_CLOEXEC
 fcntl_status = O_APPEND, FASYNC, O_DIRECT, O_NOATIME, O_NONBLOCK
 flock_type = F_RDLCK, F_WRLCK, F_UNLCK
@@ -956,9 +932,18 @@ fcntl_rw_hint = RWF_WRITE_LIFE_NOT_SET, RWH_WRITE_LIFE_NONE, RWH_WRITE_LIFE_SHOR
 fiemap_flags = FIEMAP_FLAG_SYNC, FIEMAP_FLAG_XATTR, FIEMAP_FLAG_CACHE
 fiemap_extent_flags = FIEMAP_EXTENT_LAST, FIEMAP_EXTENT_UNKNOWN, FIEMAP_EXTENT_DELALLOC, FIEMAP_EXTENT_ENCODED, FIEMAP_EXTENT_DATA_ENCRYPTED, FIEMAP_EXTENT_NOT_ALIGNED, FIEMAP_EXTENT_DATA_INLINE, FIEMAP_EXTENT_DATA_TAIL, FIEMAP_EXTENT_UNWRITTEN, FIEMAP_EXTENT_MERGED, FIEMAP_EXTENT_SHARED
 getrandom_flags = GRND_NONBLOCK, GRND_RANDOM
-clone_flags = CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_PTRACE, CLONE_VFORK, CLONE_PARENT, CLONE_THREAD, CLONE_NEWNS, CLONE_SYSVSEM, CLONE_SETTLS, CLONE_PARENT_SETTID, CLONE_CHILD_CLEARTID, CLONE_UNTRACED, CLONE_CHILD_SETTID, CLONE_NEWCGROUP, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNET, CLONE_IO
+clone_flags = CLONE_VM, CLONE_FS, CLONE_FILES, CLONE_SIGHAND, CLONE_PTRACE, CLONE_VFORK, CLONE_PARENT, CLONE_THREAD, CLONE_NEWNS, CLONE_SYSVSEM, CLONE_SETTLS, CLONE_PARENT_SETTID, CLONE_CHILD_CLEARTID, CLONE_UNTRACED, CLONE_CHILD_SETTID, CLONE_NEWCGROUP, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWUSER, CLONE_NEWPID, CLONE_NEWNET, CLONE_IO, CLONE_PIDFD
 
-_ = KCOV_INIT_TRACE, KCOV_ENABLE, KCOV_DISABLE, KCOV_TRACE_PC, KCOV_TRACE_CMP, FIFREEZE, __NR_mmap2
+# adjtimex flags.
+_ = STA_PLL, STA_PPSFREQ, STA_PPSTIME, STA_FLL, STA_INS, STA_DEL, STA_UNSYNC, STA_FREQHOLD, STA_PPSSIGNAL, STA_PPSJITTER, STA_PPSWANDER, STA_PPSERROR, STA_CLOCKERR, STA_NANO, STA_MODE, STA_CLK, STA_RONLY
+# clock_adjtime modes
+_ = ADJ_OFFSET, ADJ_FREQUENCY, ADJ_MAXERROR, ADJ_ESTERROR, ADJ_STATUS, ADJ_TIMECONST, ADJ_TAI, ADJ_SETOFFSET, ADJ_MICRO, ADJ_NANO, ADJ_TICK, ADJ_OFFSET_SINGLESHOT
+
+# misc
+_ = KCOV_INIT_TRACE, KCOV_ENABLE, KCOV_DISABLE, KCOV_TRACE_PC, KCOV_TRACE_CMP, FIFREEZE, PTRACE_TRACEME, SYSLOG_ACTION_CONSOLE_ON, SYSLOG_ACTION_CONSOLE_OFF, SYSLOG_ACTION_CONSOLE_LEVEL, SYSLOG_ACTION_CLEAR, __NR_mmap2
+
+# Hardcode KCOV_REMOTE_ENABLE value for amd64 until new kcov patches reach mainline.
+define KCOV_REMOTE_ENABLE	1075340134
 
 # Not yet implemented syscalls
 #define __NR_umask 95

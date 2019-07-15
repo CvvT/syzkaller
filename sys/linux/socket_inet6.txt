@@ -13,15 +13,10 @@ include <uapi/linux/netfilter_ipv6/ip6_tables.h>
 
 resource sock_in6[sock]
 
-sock_in6_pair {
-	f0	sock_in6
-	f1	sock_in6
-}
-
 sockaddr_in6 {
 	family	const[AF_INET6, int16]
 	port	sock_port
-	flow	int32
+	flow	int32be
 	addr	ipv6_addr
 	scope	int32
 }
@@ -31,7 +26,6 @@ sockaddr_storage_in6 {
 } [size[SOCKADDR_STORAGE_SIZE], align_ptr]
 
 socket$inet6(domain const[AF_INET6], type flags[socket_type], proto int8) sock_in6
-socketpair$inet6(domain const[AF_INET6], type flags[socket_type], proto int8, fds ptr[out, sock_in6_pair])
 accept$inet6(fd sock_in6, peer ptr[out, sockaddr_in6, opt], peerlen ptr[inout, len[peer, int32]]) sock_in6
 accept4$inet6(fd sock_in6, peer ptr[out, sockaddr_in6, opt], peerlen ptr[inout, len[peer, int32]], flags flags[accept_flags]) sock_in6
 bind$inet6(fd sock_in6, addr ptr[in, sockaddr_in6], addrlen len[addr])
@@ -131,7 +125,7 @@ in6_flowlabel_req {
 	flr_flags	flags[flr_flags, int16]
 	flr_expires	int16
 	flr_linger	int16
-	__flr_pad	int32
+	__flr_pad	const[0, int32]
 }
 
 flr_actions = IPV6_FL_A_GET, IPV6_FL_A_PUT, IPV6_FL_A_RENEW
@@ -195,3 +189,39 @@ in6_ifreq {
 	ifr6_prefixlen	int32[0:128]
 	ifr6_ifindex	ifindex
 }
+
+# sendmsg for ip_cmsg_send, ip6_datagram_send_ctl
+
+msghdr_inet6 {
+	msg_name	ptr[in, sockaddr_in6, opt]
+	msg_namelen	len[msg_name, int32]
+	msg_iov		ptr[in, array[iovec_in]]
+	msg_iovlen	len[msg_iov, intptr]
+	msg_control	ptr[in, array[cmsghdr_inet6], opt]
+	msg_controllen	bytesize[msg_control, intptr]
+	msg_flags	const[0, int32]
+}
+
+mmsghdr_inet6 {
+	msg_hdr	msghdr_inet6
+	msg_len	const[0, int32]
+}
+
+cmsghdr_inet6 [
+	pktinfo		cmsghdr_t[SOL_IPV6, IPV6_PKTINFO, in6_pktinfo]
+	flowinfo	cmsghdr_t[SOL_IPV6, IPV6_FLOWINFO, int32be]
+	hopopts_2292	cmsghdr_t[SOL_IPV6, IPV6_HOPOPTS, ipv6_hopots_ext_header]
+	hopopts		cmsghdr_t[SOL_IPV6, IPV6_HOPOPTS, ipv6_hopots_ext_header]
+	dstopts_2292	cmsghdr_t[SOL_IPV6, IPV6_2292DSTOPTS, ipv6_dstopts_ext_header]
+	dstopts		cmsghdr_t[SOL_IPV6, IPV6_RTHDRDSTOPTS, ipv6_dstopts_ext_header]
+	rthdrdstopts	cmsghdr_t[SOL_IPV6, IPV6_RTHDRDSTOPTS, ipv6_dstopts_ext_header]
+	rthdr_2292	cmsghdr_t[SOL_IPV6, IPV6_RTHDR, ipv6_rt_hdr]
+	rthdr		cmsghdr_t[SOL_IPV6, IPV6_RTHDR, ipv6_rt_hdr]
+	hoplimit_2292	cmsghdr_t[SOL_IPV6, IPV6_2292HOPLIMIT, int32]
+	hoplimit	cmsghdr_t[SOL_IPV6, IPV6_HOPLIMIT, int32]
+	tclass		cmsghdr_t[SOL_IPV6, IPV6_TCLASS, int32]
+	dontfrag	cmsghdr_t[SOL_IPV6, IPV6_DONTFRAG, int32]
+] [varlen]
+
+sendmsg$inet6(fd sock_in6, msg ptr[in, msghdr_inet6], f flags[send_flags])
+sendmmsg$inet6(fd sock_in6, mmsg ptr[in, array[mmsghdr_inet6]], vlen len[mmsg], f flags[send_flags])

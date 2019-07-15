@@ -1,8 +1,26 @@
 # Found bugs
 
-Latest bugs are most reported by [syzbot](/docs/syzbot.md) and are listed [here](https://groups.google.com/forum/#!forum/syzkaller-bugs). Additional USB bugs are [here](/docs/linux/found_bugs_usb.md).
+Most latest bugs are reported by [syzbot](/docs/syzbot.md) and are listed [here](https://groups.google.com/forum/#!forum/syzkaller-bugs) and on the [dashboard](https://syzkaller.appspot.com/upstream).
+Additional USB bugs are [here](/docs/linux/found_bugs_usb.md).
 
 _newer first_
+* [bpf: BPF_PROG_TEST_RUN leads to unkillable process](https://groups.google.com/d/msg/syzkaller/EmqpzlOL164/loUGe070FwAJ)
+* [timer_settime leads to unkillable process](https://groups.google.com/d/msg/syzkaller/Q6t7TCcN630/ep3J4BT1FwAJ)
+* [UBSAN: Undefined behaviour in drivers/scsi/sr_ioctl.c](https://groups.google.com/d/msg/syzkaller/lfupcWLvlmI/ts9ut9LyEwAJ)
+* [KASAN: use-after-free Read in ata_scsi_mode_select_xlat](https://groups.google.com/d/msg/syzkaller/PSlmJbCdKF0/tasiCXl4AgAJ)
+* [UBSAN: Undefined behaviour in fs/f2fs/extent_cache.c](https://groups.google.com/d/msg/syzkaller/oAhUsPAO4RI/rivMjuUOCgAJ)
+* [UBSAN: Undefined behaviour in drivers/input/misc/uinput.c](https://groups.google.com/d/msg/syzkaller/i64-4xzd-Cs/wJRiNri8CQAJ)
+* [general protection fault in spk_ttyio_ldisc_close](https://groups.google.com/d/msg/syzkaller/4VJ9u48qxyc/IrT0N35uDAAJ)
+* [rtnetlink: give a user socket to get_target_net()](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=f428fe4a04cc339166c8bbd489789760de3a0cee) [CVE-2018-14646](https://nvd.nist.gov/vuln/detail/CVE-2018-14646)
+* [tipc: NULL deref in tipc_net_finalize](https://groups.google.com/d/msg/syzkaller/qhg9Gg9cFuY/I-HrdjEICAAJ)
+* [Kernel crash at i2cdev_ioctl_rdwr in drivers/i2c/i2c-dev.c](https://groups.google.com/d/msg/syzkaller/YuPOpeuGIKU/oXnZkgmqBgAJ)
+* [UBSAN: Undefined behaviour in drivers/input/mousedev.c](https://groups.google.com/d/msg/syzkaller/8A-G6SaGOHQ/vsR3aWLKAwAJ)
+* [UBSAN: Undefined behaviour in mm/page_alloc.c](https://groups.google.com/d/msg/syzkaller/STYtgfG49IQ/5g0L0b77BAAJ)
+* [WARNING in pkt setup dev](https://groups.google.com/d/msg/syzkaller/jQsAxlSpvCU/xFab0v1wBAAJ)
+* [UBSAN: Undefined behaviour in drivers/net/ppp/ppp_generic.c](https://groups.google.com/d/msg/syzkaller/xwZC0Njopck/FiU9Z-rRAgAJ)
+* [KASAN: use-after-free Read in raw_cmd_done](https://groups.google.com/d/msg/syzkaller/wylZT5uD_xw/dTiar3qVBgAJ)
+* [KMSAN: uninit-value in selinux_socket_bind, selinux_socket_connect_helper](https://groups.google.com/d/msg/syzkaller/elP9WpfcVbY/JHhEmU4BBwAJ)
+* [UBSAN: Undefined behaviour in drivers/block/floppy.c](https://groups.google.com/d/msg/syzkaller/eB8DFhbjLyI/4lSR84IiBQAJ)
 * [net: BUG still has locks held in unix_stream_splice_read](https://groups.google.com/d/msg/syzkaller/q_BUZHm-Nug/Y0o4RfDJBQAJ)
 * [general protection fault in sockfs_setattr](https://groups.google.com/d/msg/syzkaller/y4V_gr5sjsE/GRA81a6EAQAJ) [CVE-2018-12232](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2018-12232)
 * [KASAN: slab out of bounds Write in __jfs_setxattr](https://lkml.org/lkml/2018/6/1/829) [CVE-2018-12233](https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2018-12233)
@@ -265,7 +283,6 @@ _newer first_
 * [net/sctp: use-after-free in __sctp_connect](https://groups.google.com/forum/#!topic/syzkaller/W0swoIe25Eg)
 * [fs: WARNING in locks_unlink_lock_ctx (not holding proper lock)](https://groups.google.com/d/msg/syzkaller/9DFicr6njUw/aaX3dVtNBQAJ)
 * [kernel BUG in dio_get_page](https://groups.google.com/d/msg/syzkaller/rCCyOHJHflI/Ik7IhXWzBAAJ)
-* [bpf related use-after-free](http://seclists.org/oss-sec/2016/q2/332) CVE-2016-4794
 * [drm: GPF in drm_getcap](https://groups.google.com/d/msg/syzkaller/dxVHCovRzhg/7QPBBqi4BwAJ)
 * [fs: GPF in bd_mount](https://groups.google.com/d/msg/syzkaller/Z7OCclqCuq0/--YUa8QrBgAJ)
 * [tty, fbcon: use-after-free in fbcon_invert_region](https://groups.google.com/d/msg/syzkaller/1DU69JpJwJg/n-6V4Wr5BQAJ)

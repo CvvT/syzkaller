@@ -15,9 +15,12 @@ include <uapi/linux/lwtunnel.h>
 include <uapi/linux/neighbour.h>
 include <uapi/linux/fib_rules.h>
 include <uapi/linux/if_tunnel.h>
+include <uapi/linux/net_namespace.h>
 include <uapi/linux/veth.h>
+include <uapi/linux/can/gw.h>
 
 resource sock_nl_route[sock_netlink]
+type netns_id int32[0:4]
 
 socket$nl_route(domain const[AF_NETLINK], type const[SOCK_RAW], proto const[NETLINK_ROUTE]) sock_nl_route
 
@@ -78,6 +81,12 @@ netlink_msg_route [
 	bridge_getlink		netlink_msg[RTM_GETLINK, ifinfomsg[AF_BRIDGE], ifla_policy]
 	bridge_setlink		netlink_msg[RTM_SETLINK, ifinfomsg[AF_BRIDGE], ifla_policy]
 	bridge_dellink		netlink_msg[RTM_DELLINK, ifinfomsg[AF_BRIDGE], ifla_policy]
+
+	RTM_NEWNSID		netlink_msg[RTM_NEWNSID, rtgenmsg[AF_UNSPEC], rtnl_net_policy]
+	RTM_GETNSID		netlink_msg[RTM_GETNSID, rtgenmsg[AF_UNSPEC], rtnl_net_policy]
+
+	can_newroute		netlink_msg[RTM_NEWROUTE, rtcanmsg, cgw_policy]
+	can_delroute		netlink_msg[RTM_DELROUTE, rtcanmsg, cgw_policy]
 ] [varlen]
 
 type rtgenmsg[FAMILY] {
@@ -148,7 +157,7 @@ ifla_policy [
 	IFLA_MAP		nlattr[IFLA_MAP, rtnl_link_ifmap]
 	IFLA_MTU		nlattr[IFLA_MAP, int32]
 	IFLA_LINK		nlattr[IFLA_LINK, int32]
-	IFLA_MASTER		nlattr[IFLA_MASTER, int32]
+	IFLA_MASTER		nlattr[IFLA_MASTER, ifindex]
 	IFLA_CARRIER		nlattr[IFLA_CARRIER, int8]
 	IFLA_TXQLEN		nlattr[IFLA_TXQLEN, int32]
 	IFLA_WEIGHT		nlattr[IFLA_WEIGHT, int32]
@@ -156,8 +165,7 @@ ifla_policy [
 	IFLA_LINKMODE		nlattr[IFLA_LINKMODE, int8]
 	IFLA_LINKINFO		nlattr[IFLA_LINKINFO, ifla_info_policy]
 	IFLA_NET_NS_PID		nlattr[IFLA_NET_NS_PID, pid]
-# TODO: this must be some 'nsfd' fd.
-	IFLA_NET_NS_FD		nlattr[IFLA_NET_NS_FD, fd]
+	IFLA_NET_NS_FD		nlattr[IFLA_NET_NS_FD, fd_namespace]
 	IFLA_IFALIAS		nlattr[IFLA_IFALIAS, devname]
 	IFLA_IFALIASn		nlattr[IFLA_IFALIAS, void]
 	IFLA_VFINFO_LIST	nlattr[IFLA_VFINFO_LIST, array[nlattr[IFLA_VF_INFO, array[ifla_vf_policy]]]]
@@ -171,14 +179,12 @@ ifla_policy [
 	IFLA_PHYS_PORT_ID	nlattr[IFLA_PHYS_PORT_ID, array[int8, 0:MAX_PHYS_ITEM_ID_LEN]]
 	IFLA_CARRIER_CHANGES	nlattr[IFLA_CARRIER_CHANGES, int32]
 	IFLA_PHYS_SWITCH_ID	nlattr[IFLA_PHYS_SWITCH_ID, array[int8, 0:MAX_PHYS_ITEM_ID_LEN]]
-# TODO: this is some net namespace id.
-	IFLA_LINK_NETNSID	nlattr[IFLA_LINK_NETNSID, int32]
+	IFLA_LINK_NETNSID	nlattr[IFLA_LINK_NETNSID, netns_id]
 	IFLA_PROTO_DOWN		nlattr[IFLA_PROTO_DOWN, int8]
 	IFLA_XDP		nlattr[IFLA_XDP, array[ifla_xdp_policy]]
 	IFLA_EVENT		nlattr[IFLA_EVENT, int32]
 	IFLA_GROUP		nlattr[IFLA_GROUP, int32]
-# TODO: probably also some net namespace id.
-	IFLA_IF_NETNSID		nlattr[IFLA_IF_NETNSID, int32]
+	IFLA_IF_NETNSID		nlattr[IFLA_IF_NETNSID, netns_id]
 ] [varlen]
 
 type ifla_info_policy_t[TYPE, DATA_TYPE, DATA] {
@@ -206,6 +212,8 @@ ifla_info_policy [
 	veth		ifla_info_policy_t["veth", IFLA_INFO_DATA, veth_policy]
 	vti		ifla_info_policy_t["vti", IFLA_INFO_DATA, array[vti_policy]]
 	ip6vti		ifla_info_policy_t["ip6vti", IFLA_INFO_DATA, array[ip6vti_policy]]
+# TODO: this should be a net device fd. How does one even obtain these?
+	ppp		ifla_info_policy_t["ppp", IFLA_INFO_DATA, nlattr[IFLA_PPP_DEV_FD, fd]]
 ] [varlen]
 
 bond_policy [
@@ -338,7 +346,7 @@ veth_policy [
 	VETH_INFO_PEER	nlattr[VETH_INFO_PEER, ifinfomsg[AF_UNSPEC]]
 ] [varlen]
 
-vit_common_policy [
+vti_common_policy [
 	IFLA_VTI_LINK	nlattr[IFLA_VTI_LINK, ifindex]
 	IFLA_VTI_IKEY	nlattr[IFLA_VTI_IKEY, int32]
 	IFLA_VTI_OKEY	nlattr[IFLA_VTI_OKEY, int32]
@@ -348,13 +356,13 @@ vit_common_policy [
 vti_policy [
 	IFLA_VTI_LOCAL		nlattr[IFLA_VTI_LOCAL, ipv4_addr]
 	IFLA_VTI_REMOTE		nlattr[IFLA_VTI_REMOTE, ipv4_addr]
-	vit_common_policy	array[vit_common_policy]
+	vti_common_policy	array[vti_common_policy]
 ] [varlen]
 
 ip6vti_policy [
 	IFLA_VTI_LOCAL		nlattr[IFLA_VTI_LOCAL, ipv6_addr]
 	IFLA_VTI_REMOTE		nlattr[IFLA_VTI_REMOTE, ipv6_addr]
-	vit_common_policy	array[vit_common_policy]
+	vti_common_policy	array[vti_common_policy]
 ] [varlen]
 
 tunl_policy [
@@ -451,15 +459,18 @@ rtm_ipv6_policy [
 	RTA_ENCAP_TYPE	nlattr[RTA_ENCAP_TYPE, flags[lwtunnel_encap_types, int16]]
 # TODO: describe RTA_ENCAP
 	RTA_ENCAP	nlattr[RTA_ENCAP, nl_generic_attr]
-	RTA_EXPIRES	nlattr[RTA_MARK, int32]
+	RTA_EXPIRES	nlattr[RTA_EXPIRES, int32]
 	RTA_UID		nlattr[RTA_UID, uid]
 	RTA_MARK	nlattr[RTA_MARK, int32]
 ] [varlen]
 
 rtm_mpls_policy [
-	RTA_DST			nlattr[RTA_DST, array[mpls_label]]
+	RTA_DST			nlattr[RTA_DST, mpls_label]
+	RTA_MULTIPATH		nlattr[RTA_MULTIPATH, rtnexthop]
+	RTA_NEWDST		nlattr[RTA_NEWDST, array[mpls_label, 32]]
 	RTA_OIF			nlattr[RTA_OIF, ifindex]
 	RTA_TTL_PROPAGATE	nlattr[RTA_TTL_PROPAGATE, int8]
+	RTA_VIA			nlattr[RTA_VIA, sockaddr_generic]
 ] [varlen]
 
 type fib_rule_hdr[FAMILY] {
@@ -593,10 +604,91 @@ devconf_mpls_policy [
 	IGNORE_ROUTES_WITH_LINKDOWN	nlattr[NETCONFA_IGNORE_ROUTES_WITH_LINKDOWN, int32]
 ] [varlen]
 
-# TODO: implement these
-type ifla_vf_policy nl_generic_attr
-type ifla_port_policy nl_generic_attr
-type ifla_xdp_policy nl_generic_attr
+ifla_vf_policy [
+	IFLA_VF_MAC		nlattr[IFLA_VF_MAC, ifla_vf_mac]
+	IFLA_VF_VLAN		nlattr[IFLA_VF_VLAN, ifla_vf_vlan]
+	IFLA_VF_VLAN_LIST	nlattr[IFLA_VF_VLAN_LIST, array[nlattr[IFLA_VF_VLAN_INFO, ifla_vf_vlan_info]]]
+	IFLA_VF_TX_RATE		nlattr[IFLA_VF_TX_RATE, ifla_vf_tx_rate]
+	IFLA_VF_SPOOFCHK	nlattr[IFLA_VF_SPOOFCHK, ifla_vf_spoofchk]
+	IFLA_VF_RATE		nlattr[IFLA_VF_RATE, ifla_vf_rate]
+	IFLA_VF_LINK_STATE	nlattr[IFLA_VF_LINK_STATE, ifla_vf_link_state]
+	IFLA_VF_RSS_QUERY_EN	nlattr[IFLA_VF_RSS_QUERY_EN, ifla_vf_rss_query_en]
+	IFLA_VF_TRUST		nlattr[IFLA_VF_TRUST, ifla_vf_trust]
+	IFLA_VF_IB_NODE_GUID	nlattr[IFLA_VF_IB_NODE_GUID, ifla_vf_guid]
+	IFLA_VF_IB_PORT_GUID	nlattr[IFLA_VF_IB_PORT_GUID, ifla_vf_guid]
+] [varlen]
+
+ifla_vf_mac {
+	vf	int32
+	mac	mac_addr
+	pad	array[const[0, int8], 26]
+}
+
+ifla_vf_vlan {
+	vf	int32
+	vlan	int32[0:4095]
+	qos	int32
+}
+
+ifla_vf_tx_rate {
+	vf	int32
+	rate	int32
+}
+
+ifla_vf_rate {
+	vf		int32
+	min_tx_rate	int32
+	max_tx_rate	int32
+}
+
+ifla_vf_spoofchk {
+	vf	int32
+	setting	int32
+}
+
+ifla_vf_guid {
+	vf	int32
+	guid	int64
+}
+
+ifla_vf_link_state {
+	vf		int32
+	link_state	int32
+}
+
+ifla_vf_rss_query_en {
+	vf	int32
+	setting	int32
+}
+
+ifla_vf_trust {
+	vf	int32
+	setting	int32
+}
+
+ifla_vf_vlan_info {
+	vf		int32
+	vlan		int32[0:4095]
+	qos		int32
+	vlan_proto	flags[ifla_vf_vlan_proto, int16be]
+}
+
+ifla_vf_vlan_proto = ETH_P_8021Q, ETH_P_8021AD
+
+ifla_port_policy [
+	IFLA_PORT_VF		nlattr[IFLA_PORT_VF, int32]
+	IFLA_PORT_PROFILE	nlattr[IFLA_PORT_PROFILE, string]
+	IFLA_PORT_INSTANCE_UUID	nlattr[IFLA_PORT_INSTANCE_UUID, uuid_t]
+	IFLA_PORT_HOST_UUID	nlattr[IFLA_PORT_HOST_UUID, uuid_t]
+	IFLA_PORT_REQUEST	nlattr[IFLA_PORT_REQUEST, int8]
+] [varlen]
+
+ifla_xdp_policy [
+	IFLA_XDP_FD	nlattr[IFLA_XDP_FD, bpf_prog]
+	IFLA_XDP_FLAGS	nlattr[IFLA_XDP_FLAGS, flags[ifla_xdp_flags, int32]]
+] [varlen]
+
+ifla_xdp_flags = XDP_FLAGS_UPDATE_IF_NOEXIST, XDP_FLAGS_SKB_MODE, XDP_FLAGS_DRV_MODE, XDP_FLAGS_HW_MODE
 
 rtnl_link_ifmap {
 	mem_start	int64
@@ -606,6 +698,61 @@ rtnl_link_ifmap {
 	dma		int8
 	port		int8
 }
+
+rtnl_net_policy [
+	NETNSA_NSID	nlattr[NETNSA_NSID, netns_id]
+	NETNSA_PID	nlattr[NETNSA_PID, pid]
+	NETNSA_FD	nlattr[NETNSA_FD, fd_namespace]
+] [varlen]
+
+rtcanmsg {
+	can_family	const[AF_CAN, int8]
+	gwtype		const[CGW_TYPE_CAN_CAN, int8]
+	flags		flags[rtcanmsg_flags, int16]
+}
+
+rtcanmsg_flags = CGW_FLAGS_CAN_ECHO, CGW_FLAGS_CAN_SRC_TSTAMP, CGW_FLAGS_CAN_IIF_TX_OK
+
+cgw_policy [
+	CGW_MOD_AND	nlattr[CGW_MOD_AND, cgw_frame_mod]
+	CGW_MOD_OR	nlattr[CGW_MOD_OR, cgw_frame_mod]
+	CGW_MOD_XOR	nlattr[CGW_MOD_XOR, cgw_frame_mod]
+	CGW_MOD_SET	nlattr[CGW_MOD_SET, cgw_frame_mod]
+	CGW_CS_XOR	nlattr[CGW_CS_XOR, cgw_csum_xor]
+	CGW_CS_CRC8	nlattr[CGW_CS_CRC8, cgw_csum_crc8]
+	CGW_SRC_IF	nlattr[CGW_SRC_IF, ifindex_vcan]
+	CGW_DST_IF	nlattr[CGW_DST_IF, ifindex_vcan]
+	CGW_FILTER	nlattr[CGW_FILTER, can_filter]
+	CGW_LIM_HOPS	nlattr[CGW_LIM_HOPS, int8]
+	CGW_MOD_UID	nlattr[CGW_MOD_UID, uid]
+] [varlen]
+
+cgw_frame_mod {
+	cf	can_frame
+	modtype	flags[cgw_frame_modtype, int8]
+} [packed]
+
+cgw_frame_modtype = CGW_MOD_ID, CGW_MOD_DLC, CGW_MOD_DATA
+
+cgw_csum_xor {
+	from_idx	int8[-9:8]
+	to_idx		int8[-9:8]
+	result_idx	int8[-9:8]
+	init_xor_val	int8
+} [packed]
+
+cgw_csum_crc8 {
+	from_idx	int8[0:127]
+	to_idx		int8[0:127]
+	result_idx	int8[0:127]
+	init_crc_val	int8
+	final_xor_val	int8
+	crctab		array[int8, 256]
+	profile		flags[cgw_csum_crc8_profile, int8]
+	profile_data	array[int8, 20]
+} [packed]
+
+cgw_csum_crc8_profile = CGW_CRC8PRF_UNSPEC, CGW_CRC8PRF_1U8, CGW_CRC8PRF_16U8, CGW_CRC8PRF_SFFID_XOR
 
 rtnl_af = AF_INET, AF_INET6, AF_BRIDGE, AF_MPLS
 net_device_flags = IFF_UP, IFF_BROADCAST, IFF_DEBUG, IFF_LOOPBACK, IFF_POINTOPOINT, IFF_NOTRAILERS, IFF_RUNNING, IFF_NOARP, IFF_PROMISC, IFF_ALLMULTI, IFF_MASTER, IFF_SLAVE, IFF_MULTICAST, IFF_PORTSEL, IFF_AUTOMEDIA, IFF_DYNAMIC, IFF_LOWER_UP, IFF_DORMANT, IFF_ECHO
@@ -620,7 +767,7 @@ lwtunnel_encap_types = LWTUNNEL_ENCAP_NONE, LWTUNNEL_ENCAP_MPLS, LWTUNNEL_ENCAP_
 rt_table_types = RT_TABLE_UNSPEC, RT_TABLE_COMPAT, RT_TABLE_DEFAULT, RT_TABLE_MAIN, RT_TABLE_LOCAL
 ndm_state = NUD_INCOMPLETE, NUD_REACHABLE, NUD_STALE, NUD_DELAY, NUD_PROBE, NUD_FAILED, NUD_NOARP, NUD_PERMANENT, NUD_NONE
 ndm_flags = NTF_USE, NTF_SELF, NTF_MASTER, NTF_PROXY, NTF_EXT_LEARNED, NTF_OFFLOADED, NTF_ROUTER
-ifa_prefixlen = 0, 1, 8, 16, 24, 31, 32, 56, 63, 64, 128
+ifa_prefixlen = 0, 1, 8, 16, 24, 31, 32, 56, 63, 64, 120, 128
 rtm_addr_len = 0, 16, 20, 32, 128
 filter_mask = IFLA_STATS_UNSPEC, IFLA_STATS_LINK_64, IFLA_STATS_LINK_XSTATS, IFLA_STATS_LINK_XSTATS_SLAVE, IFLA_STATS_LINK_OFFLOAD_XSTATS, IFLA_STATS_AF_SPEC
 tunnel_encap_types = TUNNEL_ENCAP_NONE, TUNNEL_ENCAP_FOU, TUNNEL_ENCAP_GUE, TUNNEL_ENCAP_MPLS

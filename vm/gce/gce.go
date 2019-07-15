@@ -39,7 +39,8 @@ type Config struct {
 	Count       int    `json:"count"`        // number of VMs to use
 	MachineType string `json:"machine_type"` // GCE machine type (e.g. "n1-highcpu-2")
 	GCSPath     string `json:"gcs_path"`     // GCS path to upload image
-	GCEImage    string `json:"gce_image"`    // Pre-created GCE image to use
+	GCEImage    string `json:"gce_image"`    // pre-created GCE image to use
+	Preemptible bool   `json:"preemptible"`  // use preemptible VMs if available (defaults to true)
 }
 
 type Pool struct {
@@ -49,16 +50,17 @@ type Pool struct {
 }
 
 type instance struct {
-	env     *vmimpl.Env
-	cfg     *Config
-	GCE     *gce.Context
-	debug   bool
-	name    string
-	ip      string
-	gceKey  string // per-instance private ssh key associated with the instance
-	sshKey  string // ssh key
-	sshUser string
-	closed  chan bool
+	env      *vmimpl.Env
+	cfg      *Config
+	GCE      *gce.Context
+	debug    bool
+	name     string
+	ip       string
+	gceKey   string // per-instance private ssh key associated with the instance
+	sshKey   string // ssh key
+	sshUser  string
+	closed   chan bool
+	consolew io.WriteCloser
 }
 
 func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
@@ -66,7 +68,8 @@ func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
 		return nil, fmt.Errorf("config param name is empty (required for GCE)")
 	}
 	cfg := &Config{
-		Count: 1,
+		Count:       1,
+		Preemptible: true,
 	}
 	if err := config.LoadData(env.Config, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse gce vm config: %v", err)
@@ -74,7 +77,8 @@ func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
 	if cfg.Count < 1 || cfg.Count > 1000 {
 		return nil, fmt.Errorf("invalid config param count: %v, want [1, 1000]", cfg.Count)
 	}
-	if env.Debug {
+	if env.Debug && cfg.Count > 1 {
+		log.Logf(0, "limiting number of VMs from %v to 1 in debug mode", cfg.Count)
 		cfg.Count = 1
 	}
 	if cfg.MachineType == "" {
@@ -100,7 +104,7 @@ func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
 	if cfg.GCEImage == "" {
 		cfg.GCEImage = env.Name
 		gcsImage := filepath.Join(cfg.GCSPath, env.Name+"-image.tar.gz")
-		log.Logf(0, "uploading image to %v...", gcsImage)
+		log.Logf(0, "uploading image %v to %v...", env.Image, gcsImage)
 		if err := uploadImageToGCS(env.Image, gcsImage); err != nil {
 			return nil, err
 		}
@@ -142,7 +146,8 @@ func (pool *Pool) Create(workdir string, index int) (vmimpl.Instance, error) {
 		return nil, err
 	}
 	log.Logf(0, "creating instance: %v", name)
-	ip, err := pool.GCE.CreateInstance(name, pool.cfg.MachineType, pool.cfg.GCEImage, string(gceKeyPub))
+	ip, err := pool.GCE.CreateInstance(name, pool.cfg.MachineType, pool.cfg.GCEImage,
+		string(gceKeyPub), pool.cfg.Preemptible)
 	if err != nil {
 		return nil, err
 	}
@@ -162,12 +167,12 @@ func (pool *Pool) Create(workdir string, index int) (vmimpl.Instance, error) {
 	}
 	log.Logf(0, "wait instance to boot: %v (%v)", name, ip)
 	if err := vmimpl.WaitForSSH(pool.env.Debug, 5*time.Minute, ip,
-		sshKey, sshUser, pool.env.OS, 22); err != nil {
+		sshKey, sshUser, pool.env.OS, 22, nil); err != nil {
 		output, outputErr := pool.getSerialPortOutput(name, gceKey)
 		if outputErr != nil {
 			output = []byte(fmt.Sprintf("failed to get boot output: %v", outputErr))
 		}
-		return nil, vmimpl.BootError{Title: err.Error(), Output: output}
+		return nil, vmimpl.MakeBootError(err, output)
 	}
 	ok = true
 	inst := &instance{
@@ -188,6 +193,9 @@ func (pool *Pool) Create(workdir string, index int) (vmimpl.Instance, error) {
 func (inst *instance) Close() {
 	close(inst.closed)
 	inst.GCE.DeleteInstance(inst.name, false)
+	if inst.consolew != nil {
+		inst.consolew.Close()
+	}
 }
 
 func (inst *instance) Forward(port int) (string, error) {
@@ -217,11 +225,16 @@ func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command strin
 	con.Env = []string{}
 	con.Stdout = conWpipe
 	con.Stderr = conWpipe
-	if _, err := con.StdinPipe(); err != nil { // SSH would close connection on stdin EOF
+	conw, err := con.StdinPipe()
+	if err != nil {
 		conRpipe.Close()
 		conWpipe.Close()
 		return nil, nil, err
 	}
+	if inst.consolew != nil {
+		inst.consolew.Close()
+	}
+	inst.consolew = conw
 	if err := con.Start(); err != nil {
 		conRpipe.Close()
 		conWpipe.Close()
@@ -356,8 +369,11 @@ func waitForConsoleConnect(merger *vmimpl.OutputMerger) error {
 	}
 }
 
-func (inst *instance) Diagnose() bool {
-	return false
+func (inst *instance) Diagnose() ([]byte, bool) {
+	if inst.env.OS == "openbsd" {
+		return nil, vmimpl.DiagnoseOpenBSD(inst.consolew)
+	}
+	return nil, false
 }
 
 func (pool *Pool) getSerialPortOutput(name, gceKey string) ([]byte, error) {
@@ -436,15 +452,10 @@ func uploadImageToGCS(localImage, gcsImage string) error {
 		Mode:     0640,
 		Size:     localStat.Size(),
 		ModTime:  time.Now(),
-		// This is hacky but we actually need these large uids.
-		// GCE understands only the old GNU tar format and
-		// there is no direct way to force tar package to use GNU format.
-		// But these large numbers force tar to switch to GNU format.
-		Uid:   100000000,
-		Gid:   100000000,
-		Uname: "syzkaller",
-		Gname: "syzkaller",
+		Uname:    "syzkaller",
+		Gname:    "syzkaller",
 	}
+	setGNUFormat(tarHeader)
 	if err := tarWriter.WriteHeader(tarHeader); err != nil {
 		return fmt.Errorf("failed to write image tar header: %v", err)
 	}

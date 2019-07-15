@@ -13,6 +13,7 @@ include <net/bluetooth/cmtp/cmtp.h>
 include <net/bluetooth/bnep/bnep.h>
 include <net/bluetooth/hidp/hidp.h>
 include <net/bluetooth/sco.h>
+include <net/bluetooth/hci.h>
 include <net/bluetooth/rfcomm.h>
 include <asm/ioctls.h>
 
@@ -27,6 +28,33 @@ setsockopt$bt_hci_HCI_DATA_DIR(fd sock_bt_hci, level const[0], opt const[HCI_DAT
 setsockopt$bt_hci_HCI_TIME_STAMP(fd sock_bt_hci, level const[0], opt const[HCI_TIME_STAMP], arg ptr[in, int32], arglen len[arg])
 setsockopt$bt_hci_HCI_FILTER(fd sock_bt_hci, level const[0], opt const[HCI_FILTER], arg ptr[in, hci_ufilter], arglen len[arg])
 getsockopt$bt_hci(fd sock, level const[0], opt flags[bt_hci_sockopt], arg buffer[out], arglen ptr[inout, len[arg, int32]])
+
+resource fd_vhci[fd]
+openat$vhci(fd const[AT_FDCWD], file ptr[in, string["/dev/vhci"]], flags flags[open_flags]) fd_vhci
+write$vhci(fd fd_vhci, data ptr[in, vhci_command], size bytesize[data])
+
+vhci_command [
+	HCI_EVENT_PKT	vhci_command_generic[HCI_EVENT_PKT]
+	HCI_ACLDATA_PKT	vhci_command_generic[HCI_ACLDATA_PKT]
+	HCI_SCODATA_PKT	vhci_command_generic[HCI_SCODATA_PKT]
+	HCI_VENDOR_PKT	vhci_command_vendor_pkt
+] [varlen]
+
+type vhci_command_generic[CMD] {
+	cmd	const[CMD, int8]
+# TODO: what's the format of these packets? Is there anything interesting?
+	data	array[int8]
+}
+
+vhci_command_vendor_pkt {
+	cmd	const[HCI_VENDOR_PKT, int8]
+	opcode	flags[vhci_vendor_pkt_opcode, int8]
+}
+
+vhci_vendor_pkt_opcode = HCI_PRIMARY, HCI_AMP, HCI_EXTERNAL_CONFIG, HCI_RAW_DEVICE
+
+define HCI_EXTERNAL_CONFIG	0x40
+define HCI_RAW_DEVICE	0x80
 
 resource sock_bt_sco[sock_bt]
 
@@ -83,12 +111,11 @@ ioctl$sock_bt_bnep_BNEPGETCONNLIST(fd sock_bt_bnep, cmd const[BNEPGETCONNLIST], 
 ioctl$sock_bt_bnep_BNEPGETCONNINFO(fd sock_bt_bnep, cmd const[BNEPGETCONNINFO], arg ptr[in, bnep_conninfo])
 ioctl$sock_bt_bnep_BNEPGETSUPPFEAT(fd sock_bt_bnep, cmd const[BNEPGETSUPPFEAT], arg ptr[in, int32])
 
-ioctl$sock_bt(fd sock_bt, cmd flags[bt_ioctl], arg buffer[inout])
 setsockopt$bt_BT_SECURITY(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_SECURITY], arg ptr[in, bt_security], arglen len[arg])
 getsockopt$bt_BT_SECURITY(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_SECURITY], arg ptr[out, bt_security], arglen len[arg])
-setsockopt$bt_BT_DEFER_SETUP(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_DEFER_SETUP], arg ptr[in, int32], arglen len[arg])
-getsockopt$bt_BT_DEFER_SETUP(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_DEFER_SETUP], arg ptr[in, int32], arglen ptr[in, len[arg, intptr]])
-setsockopt$bt_BT_VOICE(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_VOICE], arg ptr[in, int16], arglen len[arg])
+setsockopt$bt_BT_DEFER_SETUP(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_DEFER_SETUP], arg ptr[in, bool32], arglen len[arg])
+getsockopt$bt_BT_DEFER_SETUP(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_DEFER_SETUP], arg ptr[in, bool32], arglen ptr[in, len[arg, intptr]])
+setsockopt$bt_BT_VOICE(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_VOICE], arg ptr[in, flags[bt_voice_settings, int16]], arglen len[arg])
 getsockopt$bt_BT_VOICE(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_VOICE], arg ptr[in, int16], arglen ptr[in, len[arg, intptr]])
 setsockopt$bt_BT_FLUSHABLE(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_FLUSHABLE], arg ptr[in, int32], arglen len[arg])
 getsockopt$bt_BT_FLUSHABLE(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_FLUSHABLE], arg ptr[in, int32], arglen ptr[in, len[arg, intptr]])
@@ -100,6 +127,8 @@ setsockopt$bt_BT_SNDMTU(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_SND
 getsockopt$bt_BT_SNDMTU(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_SNDMTU], arg ptr[in, int16], arglen ptr[in, len[arg, intptr]])
 setsockopt$bt_BT_RCVMTU(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_RCVMTU], arg ptr[in, int16], arglen len[arg])
 getsockopt$bt_BT_RCVMTU(fd sock_bt, level const[SOL_BLUETOOTH], opt const[BT_RCVMTU], arg ptr[in, int16], arglen ptr[in, len[arg, intptr]])
+
+bt_voice_settings = BT_VOICE_TRANSPARENT, BT_VOICE_CVSD_16BIT
 
 sockaddr_hci {
 	fam	const[AF_BLUETOOTH, int16]
@@ -178,17 +207,23 @@ hidp_connadd_req {
 	ctrlsk	sock
 	intrsk	sock
 	parser	int16
-	rdsize	int16
-	rddata	buffer[in]
+	rdsize	len[rddata, int16]
+	rddata	ptr[in, array[int8]]
 	country	int8
 	subclas	int8
 	vendor	int16
 	product	int16
 	version	int16
-	flags	int32
+	flags	flags[hidp_connadd_flags, int32]
 	idleto	int32
-	name	array[int8]
+	name	string[hidp_connadd_names, 128]
 }
+
+hidp_connadd_names = "syz0", "syz1"
+hidp_connadd_flags = HIDP_VIRTUAL_CABLE_UNPLUG_BIT, HIDP_BOOT_PROTOCOL_MODE_BIT
+
+define HIDP_VIRTUAL_CABLE_UNPLUG_BIT	1<<HIDP_VIRTUAL_CABLE_UNPLUG
+define HIDP_BOOT_PROTOCOL_MODE_BIT	1<<HIDP_BOOT_PROTOCOL_MODE
 
 hidp_conndel_req {
 	addr	bdaddr
@@ -260,7 +295,6 @@ bnep_connlist_req {
 bt_chi_chan = HCI_CHANNEL_RAW, HCI_CHANNEL_USER, HCI_CHANNEL_MONITOR, HCI_CHANNEL_CONTROL
 bt_hci_ioctl = HCIDEVUP, HCIDEVDOWN, HCIDEVRESET, HCIDEVRESTAT, HCIGETDEVLIST, HCIGETDEVINFO, HCIGETCONNLIST, HCIGETCONNINFO, HCIGETAUTHINFO, HCISETRAW, HCISETSCAN, HCISETAUTH, HCISETENCRYPT, HCISETPTYPE, HCISETLINKPOL, HCISETLINKMODE, HCISETACLMTU, HCISETSCOMTU, HCIBLOCKADDR, HCIUNBLOCKADDR, HCIINQUIRY
 bt_hci_sockopt = HCI_DATA_DIR, HCI_TIME_STAMP, HCI_FILTER
-bt_ioctl = TIOCOUTQ, TIOCINQ, SIOCGSTAMP, SIOCGSTAMPNS
 bt_l2cap_type = SOCK_SEQPACKET, SOCK_STREAM, SOCK_DGRAM, SOCK_RAW
 bt_l2cap_lm = L2CAP_LM_MASTER, L2CAP_LM_AUTH, L2CAP_LM_ENCRYPT, L2CAP_LM_TRUSTED, L2CAP_LM_RELIABLE, L2CAP_LM_SECURE, L2CAP_LM_FIPS
 bt_rfcomm_type = SOCK_STREAM, SOCK_RAW

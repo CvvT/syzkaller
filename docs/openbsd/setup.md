@@ -6,12 +6,12 @@ In addition, the host must be running `-current`.
 Variables used throughout the instructions:
 
 - `$KERNEL` - Custom built kernel, see [Compile Kernel](#compile-kernel).
-              Defaults to `/sys/arch/amd64/compile/GENERIC/obj/bsd` if the
+              Defaults to `/sys/arch/amd64/compile/SYZKALLER/obj/bsd` if the
               instructions are honored.
-- `$SSHKEY` - Public SSH key ***without a passphrase*** used to connect to the
-              VMs, it's advised to use a dedicated key.
+- `$SSHKEY` - SSH key ***without a passphrase*** used to connect to the VMs,
+              it's advised to use a dedicated key.
 - `$USER`   - The name of the user intended to run syzkaller.
-- `$VMDIR`  - Directory containing VM disk images.
+- `$VMIMG`  - VM disk image.
 - `$VMID`   - The numeric ID of last started VM.
 
 ## Install syzkaller
@@ -19,16 +19,20 @@ Variables used throughout the instructions:
 1. Install dependencies:
 
    ```sh
-   # pkg_add bash git gmake go
+   # pkg_add git gmake go
+   ```
+
+   In order for reproducers to work, GCC from ports is also required:
+
+   ```sh
+   # pkg_add gcc
    ```
 
 2. Clone repository:
 
    ```sh
-   $ mkdir -p ~/go/src/github.com/google
-   $ cd ~/go/src/github.com/google
-   $ git clone git@github.com:google/syzkaller.git
-   $ cd syzkaller
+   $ go get github.com/google/syzkaller
+   $ cd ~/go/src/github.com/google/syzkaller
    $ gmake all
    ```
 
@@ -36,14 +40,18 @@ Variables used throughout the instructions:
 
 A `GENERIC` kernel must be compiled with
 [kcov(4)](https://man.openbsd.org/kcov.4)
-option enabled:
+enabled:
 
 ```sh
-$ cd /sys
-$ echo 'pseudo-device kcov 1' >arch/amd64/conf/KCOV
-$ echo 'include "arch/amd64/conf/KCOV" >>arch/amd64/conf/GENERIC
-$ make -C arch/amd64/compile/GENERIC config
-$ make -C arch/amd64/compile/GENERIC
+$ cd /sys/arch/amd64
+$ cat <<EOF >conf/SYZKALLER
+include "arch/amd64/conf/GENERIC"
+pseudo-device kcov 1
+EOF
+$ cp -R compile/GENERIC compile/SYZKALLER
+$ make -C compile/SYZKALLER obj
+$ make -C compile/SYZKALLER config
+$ make -C compile/SYZKALLER
 ```
 
 ## Create VM
@@ -56,7 +64,7 @@ $ make -C arch/amd64/compile/GENERIC
    $ cat /etc/vm.conf
    vm "syzkaller" {
      disable
-     disk "${VMDIR}/syzkaller.img"
+     disk "/dev/null"
      local interface
      owner $USER
      allow instance { boot, disk, memory }
@@ -66,30 +74,40 @@ $ make -C arch/amd64/compile/GENERIC
 2. Create disk image:
 
    ```sh
-   $ vmctl create "${VMDIR}/syzkaller.img" -s 4G
+   $ vmctl create -s 4G "qcow2:$VMIMG"
    ```
 
 3. Install VM:
 
    ```sh
-   $ vmctl start syzkaller-1 -c -t syzkaller -b /bsd.rd -d "${VMDIR}/syzkaller.img"
+   $ vmctl start -c -t syzkaller -b /bsd.rd -d "$VMIMG" syzkaller-1
    ```
 
    Answers to questions that deviates from the defaults:
 
    ```
    Password for root account? ******
-   Which speed should com0 use? 115200
    Allow root ssh login? yes
    ```
 
 4. Restart the newly created VM and copy the SSH-key:
 
    ```sh
-   $ vmctl stop syzkaller-1 -w
-   $ vmctl start syzkaller
-   $ ssh "root@100.64.${VMID}.3" 'cat >~/.ssh/authorized_keys' <$SSHKEY
-   $ vmctl stop syzkaller -w
+   $ vmctl stop -w syzkaller-1
+   $ vmctl start -c -t syzkaller -d "$VMIMG" syzkaller-1
+   $ ssh "root@100.64.${VMID}.3" 'cat >~/.ssh/authorized_keys' <$SSHKEY.pub
+   ```
+
+5. Optionally, library ASLR can be disabled in order to improve boot time:
+
+   ```sh
+   $ ssh "root@100.64.${VMID}.3" 'echo library_aslr=NO >>/etc/rc.conf.local'
+   ```
+
+6. Finally, stop the VM:
+
+   ```sh
+   $ vmctl stop -w syzkaller-1
    ```
 
 ## Configure and run syzkaller
@@ -103,18 +121,19 @@ $ cat openbsd.cfg
   "target": "openbsd/amd64",
   "http": ":10000",
   "workdir": "$HOME/go/src/github.com/google/syzkaller/workdir",
-  "kernel_obj": "/sys/arch/amd64/compile/GENERIC/obj",
+  "kernel_obj": "/sys/arch/amd64/compile/SYZKALLER/obj",
   "kernel_src": "/",
   "syzkaller": "$HOME/go/src/github.com/google/syzkaller",
-  "image": "$VMDIR/syzkaller.img",
-  "sshkey": "$SSKEY",
+  "image": "$VMIMG",
+  "sshkey": "$SSHKEY",
   "sandbox": "none",
   "procs": 2,
   "type": "vmm",
   "vm": {
     "count": 4,
     "mem": 512,
-    "kernel": "$KERNEL"
+    "kernel": "$KERNEL",
+    "template": "syzkaller"
   }
 }
 $ ./bin/syz-manager -config openbsd.cfg

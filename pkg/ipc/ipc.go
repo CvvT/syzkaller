@@ -15,21 +15,28 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/google/syzkaller/pkg/cover"
 	"github.com/google/syzkaller/pkg/osutil"
+	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
 )
 
 // Configuration flags for Config.Flags.
 type EnvFlags uint64
 
+// Note: New / changed flags should be added to parse_env_flags in executor.cc
 const (
-	FlagDebug            EnvFlags = 1 << iota // debug output from executor
-	FlagSignal                                // collect feedback signals (coverage)
-	FlagSandboxSetuid                         // impersonate nobody user
-	FlagSandboxNamespace                      // use namespaces for sandboxing
-	FlagEnableTun                             // initialize and use tun in executor
-	FlagEnableNetDev                          // setup a bunch of various network devices for testing
-	FlagEnableFault                           // enable fault injection support
+	FlagDebug                      EnvFlags = 1 << iota // debug output from executor
+	FlagSignal                                          // collect feedback signals (coverage)
+	FlagSandboxSetuid                                   // impersonate nobody user
+	FlagSandboxNamespace                                // use namespaces for sandboxing
+	FlagSandboxAndroidUntrustedApp                      // use Android sandboxing for the untrusted_app domain
+	FlagExtraCover                                      // collect extra coverage
+	FlagEnableTun                                       // setup and use /dev/tun for packet injection
+	FlagEnableNetDev                                    // setup more network devices for testing
+	FlagEnableNetReset                                  // reset network namespace between programs
+	FlagEnableCgroups                                   // setup cgroups for testing
+	FlagEnableCloseFds                                  // close fds after each program
 	// Executor does not know about these:
 	FlagUseShmem      // use shared memory instead of pipes for communication
 	FlagUseForkServer // use extended protocol with handshake
@@ -51,14 +58,6 @@ type ExecOpts struct {
 	Flags     ExecFlags
 	FaultCall int // call index for fault injection (0-based)
 	FaultNth  int // fault n-th operation in the call (0-based)
-}
-
-// ExecutorFailure is returned from MakeEnv or from env.Exec when executor terminates
-// by calling fail function. This is considered a logical error (a failed assert).
-type ExecutorFailure string
-
-func (err ExecutorFailure) Error() string {
-	return string(err)
 }
 
 // Config is the configuration for Env.
@@ -86,9 +85,14 @@ type CallInfo struct {
 	Flags  CallFlags
 	Signal []uint32 // feedback signal, filled if FlagSignal is set
 	Cover  []uint32 // per-call coverage, filled if FlagSignal is set and cover == true,
-	//if dedup == false, then cov effectively contains a trace, otherwise duplicates are removed
+	// if dedup == false, then cov effectively contains a trace, otherwise duplicates are removed
 	Comps prog.CompMap // per-call comparison operands
 	Errno int          // call errno (0 if the call was successful)
+}
+
+type ProgInfo struct {
+	Calls []CallInfo
+	Extra CallInfo // stores Signal and Cover collected from background threads
 }
 
 type Env struct {
@@ -110,15 +114,41 @@ type Env struct {
 const (
 	outputSize = 16 << 20
 
-	statusFail  = 67
-	statusError = 68
-	statusRetry = 69
+	statusFail = 67
 
 	// Comparison types masks taken from KCOV headers.
 	compSizeMask  = 6
 	compSize8     = 6
 	compConstMask = 1
+
+	extraReplyIndex = 0xffffffff // uint32(-1)
 )
+
+func SandboxToFlags(sandbox string) (EnvFlags, error) {
+	switch sandbox {
+	case "none":
+		return 0, nil
+	case "setuid":
+		return FlagSandboxSetuid, nil
+	case "namespace":
+		return FlagSandboxNamespace, nil
+	case "android_untrusted_app":
+		return FlagSandboxAndroidUntrustedApp, nil
+	default:
+		return 0, fmt.Errorf("sandbox must contain one of none/setuid/namespace/android_untrusted_app")
+	}
+}
+
+func FlagsToSandbox(flags EnvFlags) string {
+	if flags&FlagSandboxSetuid != 0 {
+		return "setuid"
+	} else if flags&FlagSandboxNamespace != 0 {
+		return "namespace"
+	} else if flags&FlagSandboxAndroidUntrustedApp != 0 {
+		return "android_untrusted_app"
+	}
+	return "none"
+}
 
 func MakeEnv(config *Config, pid int) (*Env, error) {
 	var inf, outf *os.File
@@ -162,14 +192,16 @@ func MakeEnv(config *Config, pid int) (*Env, error) {
 	env.bin[0] = osutil.Abs(env.bin[0]) // we are going to chdir
 	// Append pid to binary name.
 	// E.g. if binary is 'syz-executor' and pid=15,
-	// we create a link from 'syz-executor15' to 'syz-executor' and use 'syz-executor15' as binary.
+	// we create a link from 'syz-executor.15' to 'syz-executor' and use 'syz-executor.15' as binary.
 	// This allows to easily identify program that lead to a crash in the log.
-	// Log contains pid in "executing program 15" and crashes usually contain "Comm: syz-executor15".
+	// Log contains pid in "executing program 15" and crashes usually contain "Comm: syz-executor.15".
+	// Note: pkg/report knowns about this and converts "syz-executor.15" back to "syz-executor".
 	base := filepath.Base(env.bin[0])
-	pidStr := fmt.Sprint(pid)
-	if len(base)+len(pidStr) >= 16 {
-		// TASK_COMM_LEN is currently set to 16
-		base = base[:15-len(pidStr)]
+	pidStr := fmt.Sprintf(".%v", pid)
+	const maxLen = 16 // TASK_COMM_LEN is currently set to 16
+	if len(base)+len(pidStr) >= maxLen {
+		// Remove beginning of file name, in tests temp files have unique numbers at the end.
+		base = base[len(base)+len(pidStr)-maxLen+1:]
 	}
 	binCopy := filepath.Join(filepath.Dir(env.bin[0]), base+pidStr)
 	if err := os.Link(env.bin[0], binCopy); err == nil {
@@ -210,10 +242,9 @@ var rateLimit = time.NewTicker(1 * time.Second)
 // Exec starts executor binary to execute program p and returns information about the execution:
 // output: process output
 // info: per-call info
-// failed: true if executor has detected a kernel bug
 // hanged: program hanged and was killed
-// err0: failed to start process, or executor has detected a logical error
-func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info []CallInfo, failed, hanged bool, err0 error) {
+// err0: failed to start the process or bug in executor itself
+func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInfo, hanged bool, err0 error) {
 	// Copy-in serialized program.
 	progSize, err := p.SerializeForExec(env.in)
 	if err != nil {
@@ -237,14 +268,17 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info []CallIn
 			// starting them too frequently leads to timeouts.
 			<-rateLimit.C
 		}
+		tmpDirPath := "./"
+		if p.Target.OS == "fuchsia" {
+			tmpDirPath = "/data/"
+		}
 		atomic.AddUint64(&env.StatRestarts, 1)
-		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out)
+		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, tmpDirPath)
 		if err0 != nil {
 			return
 		}
 	}
-	var restart bool
-	output, failed, hanged, restart, err0 = env.cmd.exec(opts, progData)
+	output, hanged, err0 = env.cmd.exec(opts, progData)
 	if err0 != nil {
 		env.cmd.close()
 		env.cmd = nil
@@ -255,7 +289,7 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info []CallIn
 	if info != nil && env.config.Flags&FlagSignal == 0 {
 		addFallbackSignal(p, info)
 	}
-	if restart {
+	if env.config.Flags&FlagUseForkServer == 0 {
 		env.cmd.close()
 		env.cmd = nil
 	}
@@ -265,9 +299,9 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info []CallIn
 // addFallbackSignal computes simple fallback signal in cases we don't have real coverage signal.
 // We use syscall number or-ed with returned errno value as signal.
 // At least this gives us all combinations of syscall+errno.
-func addFallbackSignal(p *prog.Prog, info []CallInfo) {
-	callInfos := make([]prog.CallInfo, len(info))
-	for i, inf := range info {
+func addFallbackSignal(p *prog.Prog, info *ProgInfo) {
+	callInfos := make([]prog.CallInfo, len(info.Calls))
+	for i, inf := range info.Calls {
 		if inf.Flags&CallExecuted != 0 {
 			callInfos[i].Flags |= prog.CallExecuted
 		}
@@ -281,35 +315,42 @@ func addFallbackSignal(p *prog.Prog, info []CallInfo) {
 	}
 	p.FallbackSignal(callInfos)
 	for i, inf := range callInfos {
-		info[i].Signal = inf.Signal
+		info.Calls[i].Signal = inf.Signal
 	}
 }
 
-func (env *Env) parseOutput(p *prog.Prog) ([]CallInfo, error) {
+func (env *Env) parseOutput(p *prog.Prog) (*ProgInfo, error) {
 	out := env.out
 	ncmd, ok := readUint32(&out)
 	if !ok {
 		return nil, fmt.Errorf("failed to read number of calls")
 	}
-	info := make([]CallInfo, len(p.Calls))
+	info := &ProgInfo{Calls: make([]CallInfo, len(p.Calls))}
+	extraParts := make([]CallInfo, 0)
 	for i := uint32(0); i < ncmd; i++ {
 		if len(out) < int(unsafe.Sizeof(callReply{})) {
 			return nil, fmt.Errorf("failed to read call %v reply", i)
 		}
 		reply := *(*callReply)(unsafe.Pointer(&out[0]))
 		out = out[unsafe.Sizeof(callReply{}):]
-		if int(reply.index) >= len(info) {
-			return nil, fmt.Errorf("bad call %v index %v/%v", i, reply.index, len(info))
+		var inf *CallInfo
+		if reply.index != extraReplyIndex {
+			if int(reply.index) >= len(info.Calls) {
+				return nil, fmt.Errorf("bad call %v index %v/%v", i, reply.index, len(info.Calls))
+			}
+			if num := p.Calls[reply.index].Meta.ID; int(reply.num) != num {
+				return nil, fmt.Errorf("wrong call %v num %v/%v", i, reply.num, num)
+			}
+			inf = &info.Calls[reply.index]
+			if inf.Flags != 0 || inf.Signal != nil {
+				return nil, fmt.Errorf("duplicate reply for call %v/%v/%v", i, reply.index, reply.num)
+			}
+			inf.Errno = int(reply.errno)
+			inf.Flags = CallFlags(reply.flags)
+		} else {
+			extraParts = append(extraParts, CallInfo{})
+			inf = &extraParts[len(extraParts)-1]
 		}
-		if num := p.Calls[reply.index].Meta.ID; int(reply.num) != num {
-			return nil, fmt.Errorf("wrong call %v num %v/%v", i, reply.num, num)
-		}
-		inf := &info[reply.index]
-		if inf.Flags != 0 || inf.Signal != nil {
-			return nil, fmt.Errorf("duplicate reply for call %v/%v/%v", i, reply.index, reply.num)
-		}
-		inf.Errno = int(reply.errno)
-		inf.Flags = CallFlags(reply.flags)
 		if inf.Signal, ok = readUint32Array(&out, reply.signalSize); !ok {
 			return nil, fmt.Errorf("call %v/%v/%v: signal overflow: %v/%v",
 				i, reply.index, reply.num, reply.signalSize, len(out))
@@ -324,7 +365,29 @@ func (env *Env) parseOutput(p *prog.Prog) ([]CallInfo, error) {
 		}
 		inf.Comps = comps
 	}
+	if len(extraParts) == 0 {
+		return info, nil
+	}
+	info.Extra = convertExtra(extraParts)
 	return info, nil
+}
+
+func convertExtra(extraParts []CallInfo) CallInfo {
+	var extra CallInfo
+	extraCover := make(cover.Cover)
+	extraSignal := make(signal.Signal)
+	for _, part := range extraParts {
+		extraCover.Merge(part.Cover)
+		extraSignal.Merge(signal.FromRaw(part.Signal, 0))
+	}
+	extra.Cover = extraCover.Serialize()
+	extra.Signal = make([]uint32, len(extraSignal))
+	i := 0
+	for s := range extraSignal {
+		extra.Signal[i] = uint32(s)
+		i++
+	}
+	return extra
 }
 
 func readComps(outp *[]byte, compsSize uint32) (prog.CompMap, error) {
@@ -459,9 +522,9 @@ type callReply struct {
 	// signal/cover/comps follow
 }
 
-func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File, outmem []byte) (
-	*command, error) {
-	dir, err := ioutil.TempDir("./", "syzkaller-testdir")
+func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File, outmem []byte,
+	tmpDirPath string) (*command, error) {
+	dir, err := ioutil.TempDir(tmpDirPath, "syzkaller-testdir")
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp dir: %v", err)
 	}
@@ -480,7 +543,7 @@ func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File
 		}
 	}()
 
-	if config.Flags&(FlagSandboxSetuid|FlagSandboxNamespace) != 0 {
+	if config.Flags&(FlagSandboxSetuid|FlagSandboxNamespace|FlagSandboxAndroidUntrustedApp) != 0 {
 		if err := os.Chmod(dir, 0777); err != nil {
 			return nil, fmt.Errorf("failed to chmod temp dir: %v", err)
 		}
@@ -556,6 +619,9 @@ func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File
 	}
 	c.cmd = cmd
 	wp.Close()
+	// Note: we explicitly close inwp before calling handshake even though we defer it above.
+	// If we don't do it and executor exits before writing handshake reply,
+	// reading from inrp will hang since we hold another end of the pipe open.
 	inwp.Close()
 
 	if c.config.Flags&FlagUseForkServer != 0 {
@@ -582,7 +648,7 @@ func (c *command) close() {
 	}
 }
 
-// handshake sends handshakeReq and waits for handshakeReply (sandbox setup can take significant time).
+// handshake sends handshakeReq and waits for handshakeReply.
 func (c *command) handshake() error {
 	req := &handshakeReq{
 		magic: inMagic,
@@ -608,6 +674,7 @@ func (c *command) handshake() error {
 		}
 		read <- nil
 	}()
+	// Sandbox setup can take significant time.
 	timeout := time.NewTimer(time.Minute)
 	select {
 	case err := <-read:
@@ -626,12 +693,6 @@ func (c *command) handshakeError(err error) error {
 	output := <-c.readDone
 	err = fmt.Errorf("executor %v: %v\n%s", c.pid, err, output)
 	c.wait()
-	if c.cmd.ProcessState != nil {
-		// Magic values returned by executor.
-		if osutil.ProcessExitStatus(c.cmd.ProcessState) == statusFail {
-			err = ExecutorFailure(err.Error())
-		}
-	}
 	return err
 }
 
@@ -646,8 +707,7 @@ func (c *command) wait() error {
 	return err
 }
 
-func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, failed, hanged,
-	restart bool, err0 error) {
+func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, hanged bool, err0 error) {
 	req := &executeReq{
 		magic:     inMagic,
 		envFlags:  uint64(c.config.Flags),
@@ -685,7 +745,6 @@ func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, failed, 
 			hang <- false
 		}
 	}()
-	restart = c.config.Flags&FlagUseForkServer == 0
 	exitStatus := -1
 	completedCalls := (*uint32)(unsafe.Pointer(&c.outmem[0]))
 	outmem := c.outmem[4:]
@@ -733,27 +792,12 @@ func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, failed, 
 	}
 	if exitStatus == -1 {
 		exitStatus = osutil.ProcessExitStatus(c.cmd.ProcessState)
-		if exitStatus == 0 {
-			exitStatus = statusRetry // fuchsia always returns wrong exit status 0
-		}
 	}
-	// Handle magic values returned by executor.
-	switch exitStatus {
-	case statusFail:
-		err0 = ExecutorFailure(fmt.Sprintf("executor %v: failed: %s", c.pid, output))
-	case statusError:
-		err0 = fmt.Errorf("executor %v: detected kernel bug", c.pid)
-		failed = true
-	case statusRetry:
-		// This is a temporal error (ENOMEM) or an unfortunate
-		// program that messes with testing setup (e.g. kills executor
-		// loop process). Pretend that nothing happened.
-		// It's better than a false crash report.
-		err0 = nil
-		hanged = false
-		restart = true
-	default:
-		err0 = fmt.Errorf("executor %v: exit status %d", c.pid, exitStatus)
+	// Ignore all other errors.
+	// Without fork server executor can legitimately exit (program contains exit_group),
+	// with fork server the top process can exit with statusFail if it wants special handling.
+	if exitStatus == statusFail {
+		err0 = fmt.Errorf("executor %v: exit status %d\n%s", c.pid, exitStatus, output)
 	}
 	return
 }

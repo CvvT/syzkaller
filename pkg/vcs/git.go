@@ -11,29 +11,31 @@ import (
 	"net/mail"
 	"os"
 	"os/exec"
+	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
+	"github.com/google/syzkaller/pkg/hash"
+	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
 )
 
 type git struct {
-	dir string
+	dir      string
+	ignoreCC map[string]bool
 }
 
-func newGit(dir string) *git {
+func newGit(dir string, ignoreCC map[string]bool) *git {
 	return &git{
-		dir: dir,
+		dir:      dir,
+		ignoreCC: ignoreCC,
 	}
 }
 
 func (git *git) Poll(repo, branch string) (*Commit, error) {
-	dir := git.dir
-	runSandboxed(dir, "git", "bisect", "reset")
-	runSandboxed(dir, "git", "reset", "--hard")
-	origin, err := runSandboxed(dir, "git", "remote", "get-url", "origin")
+	git.reset()
+	origin, err := git.git("remote", "get-url", "origin")
 	if err != nil || strings.TrimSpace(string(origin)) != repo {
 		// The repo is here, but it has wrong origin (e.g. repo in config has changed), re-clone.
 		if err := git.clone(repo, branch); err != nil {
@@ -43,79 +45,94 @@ func (git *git) Poll(repo, branch string) (*Commit, error) {
 	// Use origin/branch for the case the branch was force-pushed,
 	// in such case branch is not the same is origin/branch and we will
 	// stuck with the local version forever (git checkout won't fail).
-	if _, err := runSandboxed(dir, "git", "checkout", "origin/"+branch); err != nil {
+	if _, err := git.git("checkout", "origin/"+branch); err != nil {
 		// No such branch (e.g. branch in config has changed), re-clone.
 		if err := git.clone(repo, branch); err != nil {
 			return nil, err
 		}
 	}
-	if _, err := runSandboxed(dir, "git", "fetch", "--no-tags"); err != nil {
+	if _, err := git.git("fetch"); err != nil {
 		// Something else is wrong, re-clone.
 		if err := git.clone(repo, branch); err != nil {
 			return nil, err
 		}
 	}
-	if _, err := runSandboxed(dir, "git", "checkout", "origin/"+branch); err != nil {
+	if _, err := git.git("checkout", "origin/"+branch); err != nil {
 		return nil, err
 	}
 	return git.HeadCommit()
 }
 
 func (git *git) CheckoutBranch(repo, branch string) (*Commit, error) {
-	dir := git.dir
-	runSandboxed(dir, "git", "bisect", "reset")
-	if _, err := runSandboxed(dir, "git", "reset", "--hard"); err != nil {
-		if err := git.initRepo(); err != nil {
+	git.reset()
+	if _, err := git.git("reset", "--hard"); err != nil {
+		if err := git.initRepo(err); err != nil {
 			return nil, err
 		}
 	}
-	_, err := runSandboxed(dir, "git", "fetch", repo, branch)
+	_, err := git.git("fetch", repo, branch)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := runSandboxed(dir, "git", "checkout", "FETCH_HEAD"); err != nil {
+	if _, err := git.git("checkout", "FETCH_HEAD"); err != nil {
 		return nil, err
 	}
 	return git.HeadCommit()
 }
 
 func (git *git) CheckoutCommit(repo, commit string) (*Commit, error) {
-	dir := git.dir
-	runSandboxed(dir, "git", "bisect", "reset")
-	if _, err := runSandboxed(dir, "git", "reset", "--hard"); err != nil {
-		if err := git.initRepo(); err != nil {
+	git.reset()
+	if _, err := git.git("reset", "--hard"); err != nil {
+		if err := git.initRepo(err); err != nil {
 			return nil, err
 		}
 	}
-	_, err := runSandboxed(dir, "git", "fetch", repo)
-	if err != nil {
+	if err := git.fetchRemote(repo); err != nil {
 		return nil, err
 	}
 	return git.SwitchCommit(commit)
 }
 
+func (git *git) fetchRemote(repo string) error {
+	repoHash := hash.String([]byte(repo))
+	// Ignore error as we can double add the same remote and that will fail.
+	git.git("remote", "add", repoHash, repo)
+	_, err := git.git("fetch", "--tags", repoHash)
+	return err
+}
+
 func (git *git) SwitchCommit(commit string) (*Commit, error) {
-	dir := git.dir
-	if _, err := runSandboxed(dir, "git", "checkout", commit); err != nil {
+	git.git("reset", "--hard")
+	if _, err := git.git("checkout", commit); err != nil {
 		return nil, err
 	}
 	return git.HeadCommit()
 }
 
 func (git *git) clone(repo, branch string) error {
-	if err := git.initRepo(); err != nil {
+	if err := git.initRepo(nil); err != nil {
 		return err
 	}
-	if _, err := runSandboxed(git.dir, "git", "remote", "add", "origin", repo); err != nil {
+	if _, err := git.git("remote", "add", "origin", repo); err != nil {
 		return err
 	}
-	if _, err := runSandboxed(git.dir, "git", "fetch", "origin", branch); err != nil {
+	if _, err := git.git("fetch", "origin", branch); err != nil {
 		return err
 	}
 	return nil
 }
 
-func (git *git) initRepo() error {
+func (git *git) reset() {
+	// This function tries to reset git repo state to a known clean state.
+	git.git("reset", "--hard")
+	git.git("bisect", "reset")
+	git.git("reset", "--hard")
+}
+
+func (git *git) initRepo(reason error) error {
+	if reason != nil {
+		log.Logf(1, "git: initializing repo at %v: %v", git.dir, reason)
+	}
 	if err := os.RemoveAll(git.dir); err != nil {
 		return fmt.Errorf("failed to remove repo dir: %v", err)
 	}
@@ -125,7 +142,7 @@ func (git *git) initRepo() error {
 	if err := osutil.SandboxChown(git.dir); err != nil {
 		return err
 	}
-	if _, err := runSandboxed(git.dir, "git", "init"); err != nil {
+	if _, err := git.git("init"); err != nil {
 		return err
 	}
 	return nil
@@ -136,26 +153,48 @@ func (git *git) HeadCommit() (*Commit, error) {
 }
 
 func (git *git) getCommit(commit string) (*Commit, error) {
-	output, err := runSandboxed(git.dir, "git", "log", "--format=%H%n%s%n%ae%n%ad%n%b", "-n", "1", commit)
+	output, err := git.git("log", "--format=%H%n%s%n%ae%n%an%n%ad%n%b", "-n", "1", commit)
 	if err != nil {
 		return nil, err
 	}
-	return gitParseCommit(output)
+	return gitParseCommit(output, nil, nil, git.ignoreCC)
 }
 
-func gitParseCommit(output []byte) (*Commit, error) {
+func gitParseCommit(output, user, domain []byte, ignoreCC map[string]bool) (*Commit, error) {
 	lines := bytes.Split(output, []byte{'\n'})
 	if len(lines) < 4 || len(lines[0]) != 40 {
 		return nil, fmt.Errorf("unexpected git log output: %q", output)
 	}
 	const dateFormat = "Mon Jan 2 15:04:05 2006 -0700"
-	date, err := time.Parse(dateFormat, string(lines[3]))
+	date, err := time.Parse(dateFormat, string(lines[4]))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse date in git log output: %v\n%q", err, output)
 	}
 	cc := make(map[string]bool)
 	cc[strings.ToLower(string(lines[2]))] = true
-	for _, line := range lines[4:] {
+	var tags []string
+	for _, line := range lines[5:] {
+		if user != nil {
+			userPos := bytes.Index(line, user)
+			if userPos != -1 {
+				domainPos := bytes.Index(line[userPos+len(user)+1:], domain)
+				if domainPos != -1 {
+					startPos := userPos + len(user)
+					endPos := userPos + len(user) + domainPos + 1
+					tag := string(line[startPos:endPos])
+					present := false
+					for _, tag1 := range tags {
+						if tag1 == tag {
+							present = true
+							break
+						}
+					}
+					if !present {
+						tags = append(tags, tag)
+					}
+				}
+			}
+		}
 		for _, re := range ccRes {
 			matches := re.FindSubmatchIndex(line)
 			if matches == nil {
@@ -165,7 +204,11 @@ func gitParseCommit(output []byte) (*Commit, error) {
 			if err != nil {
 				break
 			}
-			cc[strings.ToLower(addr.Address)] = true
+			email := strings.ToLower(addr.Address)
+			if ignoreCC[email] {
+				continue
+			}
+			cc[email] = true
 			break
 		}
 	}
@@ -175,31 +218,90 @@ func gitParseCommit(output []byte) (*Commit, error) {
 	}
 	sort.Strings(sortedCC)
 	com := &Commit{
-		Hash:   string(lines[0]),
-		Title:  string(lines[1]),
-		Author: string(lines[2]),
-		CC:     sortedCC,
-		Date:   date,
+		Hash:       string(lines[0]),
+		Title:      string(lines[1]),
+		Author:     string(lines[2]),
+		AuthorName: string(lines[3]),
+		CC:         sortedCC,
+		Tags:       tags,
+		Date:       date,
 	}
 	return com, nil
+}
+
+func (git *git) GetCommitByTitle(title string) (*Commit, error) {
+	commits, _, err := git.GetCommitsByTitles([]string{title})
+	if err != nil || len(commits) == 0 {
+		return nil, err
+	}
+	return commits[0], nil
+}
+
+func (git *git) GetCommitsByTitles(titles []string) ([]*Commit, []string, error) {
+	var greps []string
+	m := make(map[string]string)
+	for _, title := range titles {
+		canonical := CanonicalizeCommit(title)
+		greps = append(greps, canonical)
+		m[canonical] = title
+	}
+	since := time.Now().Add(-time.Hour * 24 * 365 * 2).Format("01-02-2006")
+	commits, err := git.fetchCommits(since, "HEAD", "", "", greps, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	var results []*Commit
+	for _, com := range commits {
+		canonical := CanonicalizeCommit(com.Title)
+		if orig := m[canonical]; orig != "" {
+			delete(m, canonical)
+			results = append(results, com)
+			com.Title = orig
+		}
+	}
+	var missing []string
+	for _, orig := range m {
+		missing = append(missing, orig)
+	}
+	return results, missing, nil
 }
 
 func (git *git) ListRecentCommits(baseCommit string) ([]string, error) {
 	// On upstream kernel this produces ~11MB of output.
 	// Somewhat inefficient to collect whole output in a slice
 	// and then convert to string, but should be bearable.
-	output, err := runSandboxed(git.dir, "git", "log",
-		"--pretty=format:%s", "--no-merges", "-n", "200000", baseCommit)
+	output, err := git.git("log", "--pretty=format:%s", "-n", "200000", baseCommit)
 	if err != nil {
 		return nil, err
 	}
 	return strings.Split(string(output), "\n"), nil
 }
 
-func (git *git) ExtractFixTagsFromCommits(baseCommit, email string) ([]FixCommit, error) {
+func (git *git) ExtractFixTagsFromCommits(baseCommit, email string) ([]*Commit, error) {
+	user, domain, err := splitEmail(email)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse email %q: %v", email, err)
+	}
+	grep := user + "+.*" + domain
 	since := time.Now().Add(-time.Hour * 24 * 365).Format("01-02-2006")
-	cmd := exec.Command("git", "log", "--no-merges", "--since", since, baseCommit)
+	return git.fetchCommits(since, baseCommit, user, domain, []string{grep}, false)
+}
+
+func (git *git) fetchCommits(since, base, user, domain string, greps []string, fixedStrings bool) ([]*Commit, error) {
+	const commitSeparator = "---===syzkaller-commit-separator===---"
+	args := []string{"log", "--since", since, "--format=%H%n%s%n%ae%n%an%n%ad%n%b%n" + commitSeparator}
+	if fixedStrings {
+		args = append(args, "--fixed-strings")
+	}
+	for _, grep := range greps {
+		args = append(args, "--grep", grep)
+	}
+	args = append(args, base)
+	cmd := exec.Command("git", args...)
 	cmd.Dir = git.dir
+	if err := osutil.Sandbox(cmd, true, false); err != nil {
+		return nil, err
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, err
@@ -209,54 +311,39 @@ func (git *git) ExtractFixTagsFromCommits(baseCommit, email string) ([]FixCommit
 	}
 	defer cmd.Wait()
 	defer cmd.Process.Kill()
-	return gitExtractFixTags(stdout, email)
-}
-
-func gitExtractFixTags(r io.Reader, email string) ([]FixCommit, error) {
-	user, domain, err := splitEmail(email)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse email %q: %v", email, err)
-	}
 	var (
-		s           = bufio.NewScanner(r)
-		commits     []FixCommit
-		commitTitle = ""
-		commitStart = []byte("commit ")
-		bodyPrefix  = []byte("    ")
-		userBytes   = []byte(user + "+")
-		domainBytes = []byte(domain)
+		s           = bufio.NewScanner(stdout)
+		buf         = new(bytes.Buffer)
+		separator   = []byte(commitSeparator)
+		commits     []*Commit
+		userBytes   []byte
+		domainBytes []byte
 	)
+	if user != "" {
+		userBytes = []byte(user + "+")
+		domainBytes = []byte(domain)
+	}
 	for s.Scan() {
 		ln := s.Bytes()
-		if bytes.HasPrefix(ln, commitStart) {
-			commitTitle = ""
+		if !bytes.Equal(ln, separator) {
+			buf.Write(ln)
+			buf.WriteByte('\n')
 			continue
 		}
-		if !bytes.HasPrefix(ln, bodyPrefix) {
-			continue
+		com, err := gitParseCommit(buf.Bytes(), userBytes, domainBytes, git.ignoreCC)
+		if err != nil {
+			return nil, err
 		}
-		ln = ln[len(bodyPrefix):]
-		if len(ln) == 0 {
-			continue
+		if user == "" || len(com.Tags) != 0 {
+			commits = append(commits, com)
 		}
-		if commitTitle == "" {
-			commitTitle = string(ln)
-			continue
-		}
-		userPos := bytes.Index(ln, userBytes)
-		if userPos == -1 {
-			continue
-		}
-		domainPos := bytes.Index(ln[userPos+len(userBytes)+1:], domainBytes)
-		if domainPos == -1 {
-			continue
-		}
-		startPos := userPos + len(userBytes)
-		endPos := userPos + len(userBytes) + domainPos + 1
-		tag := string(ln[startPos:endPos])
-		commits = append(commits, FixCommit{tag, commitTitle})
+		buf.Reset()
 	}
 	return commits, s.Err()
+}
+
+func (git *git) git(args ...string) ([]byte, error) {
+	return runSandboxed(git.dir, "git", args...)
 }
 
 func splitEmail(email string) (user, domain string, err error) {
@@ -276,19 +363,17 @@ func splitEmail(email string) (user, domain string, err error) {
 	return
 }
 
-func (git *git) Bisect(bad, good string, trace io.Writer, pred func() (BisectResult, error)) (*Commit, error) {
-	dir := git.dir
-	runSandboxed(dir, "git", "bisect", "reset")
-	runSandboxed(dir, "git", "reset", "--hard")
+func (git *git) Bisect(bad, good string, trace io.Writer, pred func() (BisectResult, error)) ([]*Commit, error) {
+	git.reset()
 	firstBad, err := git.getCommit(bad)
 	if err != nil {
 		return nil, err
 	}
-	output, err := runSandboxed(dir, "git", "bisect", "start", bad, good)
+	output, err := git.git("bisect", "start", bad, good)
 	if err != nil {
 		return nil, err
 	}
-	defer runSandboxed(dir, "git", "bisect", "reset")
+	defer git.reset()
 	fmt.Fprintf(trace, "# git bisect start %v %v\n%s", bad, good, output)
 	current, err := git.HeadCommit()
 	if err != nil {
@@ -301,66 +386,53 @@ func (git *git) Bisect(bad, good string, trace io.Writer, pred func() (BisectRes
 	}
 	for {
 		res, err := pred()
+		// Linux EnvForCommit may cherry-pick some fixes, reset these before the next step.
+		git.git("reset", "--hard")
 		if err != nil {
 			return nil, err
 		}
 		if res == BisectBad {
 			firstBad = current
 		}
-		output, err = runSandboxed(dir, "git", "bisect", bisectTerms[res])
+		output, err = git.git("bisect", bisectTerms[res])
+		fmt.Fprintf(trace, "# git bisect %v %v\n%s", bisectTerms[res], current.Hash, output)
 		if err != nil {
+			if bytes.Contains(output, []byte("There are only 'skip'ped commits left to test")) {
+				return git.bisectInconclusive(output)
+			}
 			return nil, err
 		}
-		fmt.Fprintf(trace, "# git bisect %v %v\n%s", bisectTerms[res], current.Hash, output)
 		next, err := git.HeadCommit()
 		if err != nil {
 			return nil, err
 		}
 		if current.Hash == next.Hash {
-			return firstBad, nil
+			return []*Commit{firstBad}, nil
 		}
 		current = next
 	}
 }
 
-// Note: linux-specific.
-func (git *git) PreviousReleaseTags(commit string) ([]string, error) {
-	output, err := runSandboxed(git.dir, "git", "tag", "--no-contains", commit, "--merged", commit, "v*.*")
-	if err != nil {
-		return nil, err
-	}
-	return gitParseReleaseTags(output)
-}
-
-func gitParseReleaseTags(output []byte) ([]string, error) {
-	var tags []string
-	for _, tag := range bytes.Split(output, []byte{'\n'}) {
-		if releaseTagRe.Match(tag) && gitReleaseTagToInt(string(tag)) != 0 {
-			tags = append(tags, string(tag))
-		}
-	}
-	sort.Slice(tags, func(i, j int) bool {
-		return gitReleaseTagToInt(tags[i]) > gitReleaseTagToInt(tags[j])
-	})
-	return tags, nil
-}
-
-func gitReleaseTagToInt(tag string) uint64 {
-	matches := releaseTagRe.FindStringSubmatchIndex(tag)
-	v1, err := strconv.ParseUint(tag[matches[2]:matches[3]], 10, 64)
-	if err != nil {
-		return 0
-	}
-	v2, err := strconv.ParseUint(tag[matches[4]:matches[5]], 10, 64)
-	if err != nil {
-		return 0
-	}
-	var v3 uint64
-	if matches[6] != -1 {
-		v3, err = strconv.ParseUint(tag[matches[6]:matches[7]], 10, 64)
+func (git *git) bisectInconclusive(output []byte) ([]*Commit, error) {
+	// For inconclusive bisection git prints the following message:
+	//
+	//	There are only 'skip'ped commits left to test.
+	//	The first bad commit could be any of:
+	//	1f43f400a2cbb02f3d34de8fe30075c070254816
+	//	4d96e13ee9cd1f7f801e8c7f4b12f09d1da4a5d8
+	//	5cd856a5ef9aa189df757c322be34ad735a5b17f
+	//	We cannot bisect more!
+	//
+	// For conclusive bisection:
+	//
+	//	7c3850adbcccc2c6c9e7ab23a7dcbc4926ee5b96 is the first bad commit
+	var commits []*Commit
+	for _, hash := range regexp.MustCompile("[a-f0-9]{40}").FindAll(output, -1) {
+		com, err := git.getCommit(string(hash))
 		if err != nil {
-			return 0
+			return nil, err
 		}
+		commits = append(commits, com)
 	}
-	return v1*1e6 + v2*1e3 + v3
+	return commits, nil
 }

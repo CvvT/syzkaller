@@ -9,15 +9,18 @@ import (
 	"math/rand"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/syzkaller/pkg/csource"
 	"github.com/google/syzkaller/pkg/db"
 	"github.com/google/syzkaller/pkg/host"
 	"github.com/google/syzkaller/pkg/ipc"
 	"github.com/google/syzkaller/pkg/ipc/ipcconfig"
 	"github.com/google/syzkaller/pkg/log"
+	"github.com/google/syzkaller/pkg/mgrconfig"
 	"github.com/google/syzkaller/prog"
 	_ "github.com/google/syzkaller/sys"
 )
@@ -30,6 +33,9 @@ var (
 	flagProcs    = flag.Int("procs", 2*runtime.NumCPU(), "number of parallel processes")
 	flagLogProg  = flag.Bool("logprog", false, "print programs before execution")
 	flagGenerate = flag.Bool("generate", true, "generate new programs, otherwise only mutate corpus")
+	flagSyscalls = flag.String("syscalls", "", "comma-separated list of enabled syscalls")
+	flagEnable   = flag.String("enable", "none", "enable only listed additional features")
+	flagDisable  = flag.String("disable", "none", "enable all additional features except listed")
 
 	statExec uint64
 	gate     *ipc.Gate
@@ -38,7 +44,15 @@ var (
 const programLength = 30
 
 func main() {
+	flag.Usage = func() {
+		flag.PrintDefaults()
+		csource.PrintAvailableFeaturesFlags()
+	}
 	flag.Parse()
+	featuresFlags, err := csource.ParseFeaturesFlags(*flagEnable, *flagDisable, true)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
 	target, err := prog.GetTarget(*flagOS, *flagArch)
 	if err != nil {
 		log.Fatalf("%v", err)
@@ -53,11 +67,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	if _, err = host.Setup(target, features); err != nil {
-		log.Fatalf("%v", err)
-	}
 
-	calls := buildCallList(target)
+	var syscalls []string
+	if *flagSyscalls != "" {
+		syscalls = strings.Split(*flagSyscalls, ",")
+	}
+	calls := buildCallList(target, syscalls)
 	prios := target.CalculatePriorities(corpus)
 	ct := target.BuildChoiceTable(prios, calls)
 
@@ -65,11 +80,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("%v", err)
 	}
-	if features[host.FeatureNetworkInjection].Enabled {
+	if featuresFlags["tun"].Enabled && features[host.FeatureNetworkInjection].Enabled {
 		config.Flags |= ipc.FlagEnableTun
 	}
-	if features[host.FeatureNetworkDevices].Enabled {
+	if featuresFlags["net_dev"].Enabled && features[host.FeatureNetworkDevices].Enabled {
 		config.Flags |= ipc.FlagEnableNetDev
+	}
+	if featuresFlags["net_reset"].Enabled {
+		config.Flags |= ipc.FlagEnableNetReset
+	}
+	if featuresFlags["cgroups"].Enabled {
+		config.Flags |= ipc.FlagEnableCgroups
+	}
+	if featuresFlags["close_fds"].Enabled {
+		config.Flags |= ipc.FlagEnableCloseFds
+	}
+	if err = host.Setup(target, features, featuresFlags, config.Executor); err != nil {
+		log.Fatal(err)
 	}
 	gate = ipc.NewGate(2**flagProcs, nil)
 	for pid := 0; pid < *flagProcs; pid++ {
@@ -114,14 +141,14 @@ func execute(pid int, env *ipc.Env, execOpts *ipc.ExecOpts, p *prog.Prog) {
 		fmt.Printf("executing program %v\n%s\n", pid, p.Serialize())
 		outMu.Unlock()
 	}
-	output, _, failed, hanged, err := env.Exec(execOpts, p)
+	output, _, hanged, err := env.Exec(execOpts, p)
 	if err != nil {
 		fmt.Printf("failed to execute executor: %v\n", err)
 	}
-	if failed || hanged || err != nil || *flagOutput {
+	if hanged || err != nil || *flagOutput {
 		fmt.Printf("PROGRAM:\n%s\n", p.Serialize())
 	}
-	if failed || hanged || err != nil || *flagOutput {
+	if hanged || err != nil || *flagOutput {
 		os.Stdout.Write(output)
 	}
 }
@@ -136,7 +163,7 @@ func readCorpus(target *prog.Target) []*prog.Prog {
 	}
 	var progs []*prog.Prog
 	for _, rec := range db.Records {
-		p, err := target.Deserialize(rec.Val)
+		p, err := target.Deserialize(rec.Val, prog.NonStrict)
 		if err != nil {
 			log.Fatalf("failed to deserialize corpus program: %v", err)
 		}
@@ -145,7 +172,7 @@ func readCorpus(target *prog.Target) []*prog.Prog {
 	return progs
 }
 
-func buildCallList(target *prog.Target) map[*prog.Syscall]bool {
+func buildCallList(target *prog.Target, enabled []string) map[*prog.Syscall]bool {
 	if *flagOS != runtime.GOOS {
 		// This is currently used on akaros, where syz-stress runs on host.
 		calls := make(map[*prog.Syscall]bool)
@@ -156,10 +183,26 @@ func buildCallList(target *prog.Target) map[*prog.Syscall]bool {
 	}
 	calls, disabled, err := host.DetectSupportedSyscalls(target, "none")
 	if err != nil {
-		log.Logf(0, "failed to detect host supported syscalls: %v", err)
-		calls = make(map[*prog.Syscall]bool)
-		for _, c := range target.Syscalls {
-			calls[c] = true
+		log.Fatalf("failed to detect host supported syscalls: %v", err)
+	}
+	if len(enabled) != 0 {
+		syscallsIDs, err := mgrconfig.ParseEnabledSyscalls(target, enabled, nil)
+		if err != nil {
+			log.Fatalf("failed to parse enabled syscalls: %v", err)
+		}
+		enabledSyscalls := make(map[*prog.Syscall]bool)
+		for _, id := range syscallsIDs {
+			enabledSyscalls[target.Syscalls[id]] = true
+		}
+		for c := range calls {
+			if !enabledSyscalls[c] {
+				delete(calls, c)
+			}
+		}
+		for c := range disabled {
+			if !enabledSyscalls[c] {
+				delete(disabled, c)
+			}
 		}
 	}
 	for c, reason := range disabled {

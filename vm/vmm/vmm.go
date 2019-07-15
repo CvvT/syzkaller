@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -25,7 +26,6 @@ func init() {
 
 type Config struct {
 	Count    int    `json:"count"`    // number of VMs to use
-	CPU      int    `json:"cpu"`      // number of VM CPUs
 	Mem      int    `json:"mem"`      // amount of VM memory in MBs
 	Kernel   string `json:"kernel"`   // kernel to boot
 	Template string `json:"template"` // vm template
@@ -38,19 +38,17 @@ type Pool struct {
 
 type instance struct {
 	cfg      *Config
-	index    int
 	image    string
 	debug    bool
 	os       string
-	workdir  string
 	sshkey   string
 	sshuser  string
 	sshhost  string
 	sshport  int
 	merger   *vmimpl.OutputMerger
 	vmName   string
-	stop     chan bool
-	diagnose chan string
+	vmm      *exec.Cmd
+	consolew io.WriteCloser
 }
 
 var ipRegex = regexp.MustCompile(`bound to (([0-9]+\.){3}3)`)
@@ -58,7 +56,6 @@ var ipRegex = regexp.MustCompile(`bound to (([0-9]+\.){3}3)`)
 func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
 	cfg := &Config{
 		Count: 1,
-		CPU:   1,
 		Mem:   512,
 	}
 
@@ -69,14 +66,12 @@ func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
 	if err := config.LoadData(env.Config, cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse vmm vm config: %v", err)
 	}
-	if cfg.Count < 1 || cfg.Count > 8 {
-		return nil, fmt.Errorf("invalid config param count: %v, want [1-8]", cfg.Count)
+	if cfg.Count < 1 || cfg.Count > 128 {
+		return nil, fmt.Errorf("invalid config param count: %v, want [1-128]", cfg.Count)
 	}
-	if env.Debug {
+	if env.Debug && cfg.Count > 1 {
+		log.Logf(0, "limiting number of VMs from %v to 1 in debug mode", cfg.Count)
 		cfg.Count = 1
-	}
-	if cfg.CPU > 1 {
-		return nil, fmt.Errorf("invalid config param cpu: %v, want 1", cfg.CPU)
 	}
 	if cfg.Mem < 128 || cfg.Mem > 1048576 {
 		return nil, fmt.Errorf("invalid config param mem: %v, want [128-1048576]", cfg.Mem)
@@ -86,9 +81,6 @@ func ctor(env *vmimpl.Env) (vmimpl.Pool, error) {
 	}
 	if !osutil.IsExist(cfg.Kernel) {
 		return nil, fmt.Errorf("kernel '%v' does not exist", cfg.Kernel)
-	}
-	if cfg.Template == "" {
-		return nil, fmt.Errorf("missing config param template")
 	}
 	pool := &Pool{
 		cfg: cfg,
@@ -103,63 +95,87 @@ func (pool *Pool) Count() int {
 }
 
 func (pool *Pool) Create(workdir string, index int) (vmimpl.Instance, error) {
-	image := filepath.Join(workdir, "disk.img")
-	if err := osutil.CopyFile(pool.env.Image, image); err != nil {
-		return nil, err
+	var tee io.Writer
+	if pool.env.Debug {
+		tee = os.Stdout
+	}
+	inst := &instance{
+		cfg:     pool.cfg,
+		image:   filepath.Join(workdir, "disk.qcow2"),
+		debug:   pool.env.Debug,
+		os:      pool.env.OS,
+		sshkey:  pool.env.SSHKey,
+		sshuser: pool.env.SSHUser,
+		sshport: 22,
+		vmName:  fmt.Sprintf("%v-%v", pool.env.Name, index),
+		merger:  vmimpl.NewOutputMerger(tee),
 	}
 
-	name := fmt.Sprintf("syzkaller-%v-%v", pool.env.Name, index)
-	inst := &instance{
-		cfg:      pool.cfg,
-		index:    index,
-		image:    image,
-		debug:    pool.env.Debug,
-		os:       pool.env.OS,
-		workdir:  workdir,
-		sshkey:   pool.env.SSHKey,
-		sshuser:  pool.env.SSHUser,
-		sshport:  22,
-		vmName:   name,
-		stop:     make(chan bool),
-		diagnose: make(chan string),
+	// Stop the instance from the previous run in case it's still running.
+	// This is racy even with -w flag, start periodically fails with:
+	// vmctl: start vm command failed: Operation already in progress
+	// So also sleep for a bit.
+	inst.vmctl("stop", inst.vmName, "-f", "-w")
+	time.Sleep(3 * time.Second)
+
+	createArgs := []string{
+		"create", inst.image,
+		"-b", pool.env.Image,
 	}
-	closeInst := inst
-	defer func() {
-		if closeInst != nil {
-			closeInst.Close()
-		}
-	}()
+	if _, err := inst.vmctl(createArgs...); err != nil {
+		return nil, err
+	}
 
 	if err := inst.Boot(); err != nil {
+		// Cleans up if Boot fails.
+		inst.Close()
 		return nil, err
 	}
 
-	closeInst = nil
 	return inst, nil
 }
 
 func (inst *instance) Boot() error {
-	mem := fmt.Sprintf("%vM", inst.cfg.Mem)
+	outr, outw, err := osutil.LongPipe()
+	if err != nil {
+		return err
+	}
+	inr, inw, err := osutil.LongPipe()
+	if err != nil {
+		outr.Close()
+		outw.Close()
+		return err
+	}
 	startArgs := []string{
 		"start", inst.vmName,
-		"-t", inst.cfg.Template,
 		"-b", inst.cfg.Kernel,
 		"-d", inst.image,
-		"-m", mem,
+		"-m", fmt.Sprintf("%vM", inst.cfg.Mem),
+		"-L", // add a local network interface
+		"-c", // connect to the console
 	}
-	if _, err := inst.vmctl(startArgs...); err != nil {
-		return err
+	if inst.cfg.Template != "" {
+		startArgs = append(startArgs, "-t", inst.cfg.Template)
 	}
-
-	var tee io.Writer
 	if inst.debug {
-		tee = os.Stdout
+		log.Logf(0, "running command: vmctl %#v", startArgs)
 	}
-	inst.merger = vmimpl.NewOutputMerger(tee)
-
-	if err := inst.console(); err != nil {
+	cmd := osutil.Command("vmctl", startArgs...)
+	cmd.Stdin = inr
+	cmd.Stdout = outw
+	cmd.Stderr = outw
+	if err := cmd.Start(); err != nil {
+		outr.Close()
+		outw.Close()
+		inr.Close()
+		inw.Close()
 		return err
 	}
+	inst.vmm = cmd
+	inst.consolew = inw
+	outw.Close()
+	inr.Close()
+	inst.merger.Add("console", outr)
 
 	var bootOutput []byte
 	bootOutputStop := make(chan bool)
@@ -187,24 +203,37 @@ func (inst *instance) Boot() error {
 	select {
 	case ip := <-ipch:
 		inst.sshhost = ip
-	case <-time.After(1 * time.Minute):
+	case <-inst.merger.Err:
+		bootOutputStop <- true
+		<-bootOutputStop
+		return vmimpl.BootError{Title: "vmm exited", Output: bootOutput}
+	case <-time.After(10 * time.Minute):
 		bootOutputStop <- true
 		<-bootOutputStop
 		return vmimpl.BootError{Title: "no IP found", Output: bootOutput}
 	}
 
-	if err := vmimpl.WaitForSSH(inst.debug, 2*time.Minute, inst.sshhost,
-		inst.sshkey, inst.sshuser, inst.os, inst.sshport); err != nil {
+	if err := vmimpl.WaitForSSH(inst.debug, 20*time.Minute, inst.sshhost,
+		inst.sshkey, inst.sshuser, inst.os, inst.sshport, nil); err != nil {
 		bootOutputStop <- true
 		<-bootOutputStop
 		return vmimpl.BootError{Title: err.Error(), Output: bootOutput}
 	}
 	bootOutputStop <- true
+	<-bootOutputStop
 	return nil
 }
 
 func (inst *instance) Close() {
 	inst.vmctl("stop", inst.vmName, "-f")
+	if inst.consolew != nil {
+		inst.consolew.Close()
+	}
+	if inst.vmm != nil {
+		inst.vmm.Process.Kill()
+		inst.vmm.Wait()
+	}
+	inst.merger.Wait()
 }
 
 func (inst *instance) Forward(port int) (string, error) {
@@ -223,7 +252,7 @@ func (inst *instance) Copy(hostSrc string) (string, error) {
 	if inst.debug {
 		log.Logf(0, "running command: scp %#v", args)
 	}
-	_, err := osutil.RunCmd(3*time.Minute, "", "scp", args...)
+	_, err := osutil.RunCmd(10*time.Minute, "", "scp", args...)
 	if err != nil {
 		return "", err
 	}
@@ -267,88 +296,22 @@ func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command strin
 			signal(vmimpl.ErrTimeout)
 		case err := <-inst.merger.Err:
 			cmd.Process.Kill()
-			inst.stop <- true
-			inst.merger.Wait()
 			if cmdErr := cmd.Wait(); cmdErr == nil {
 				// If the command exited successfully, we got EOF error from merger.
 				// But in this case no error has happened and the EOF is expected.
 				err = nil
 			}
-
 			signal(err)
 			return
 		}
 		cmd.Process.Kill()
-		inst.stop <- true
-		inst.merger.Wait()
 		cmd.Wait()
 	}()
 	return inst.merger.Output, errc, nil
 }
 
-func (inst *instance) Diagnose() bool {
-	commands := []string{"", "trace", "show registers"}
-	for _, c := range commands {
-		select {
-		case inst.diagnose <- c:
-		case <-time.After(2 * time.Second):
-		}
-	}
-	return true
-}
-
-func (inst *instance) console() error {
-	outr, outw, err := osutil.LongPipe()
-	if err != nil {
-		return err
-	}
-	inr, inw, err := osutil.LongPipe()
-	if err != nil {
-		return err
-	}
-
-	cmd := osutil.Command("vmctl", "console", inst.vmName)
-	cmd.Stdin = inr
-	cmd.Stdout = outw
-	cmd.Stderr = outw
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	outw.Close()
-	inr.Close()
-	inst.merger.Add("console", outr)
-
-	go func() {
-		stopDiagnose := make(chan bool)
-		go func() {
-			for {
-				select {
-				case s := <-inst.diagnose:
-					inw.Write([]byte(s + "\n"))
-					time.Sleep(1 * time.Second)
-				case <-stopDiagnose:
-					return
-				}
-			}
-		}()
-
-		stopProcess := make(chan bool)
-		go func() {
-			select {
-			case <-inst.stop:
-				cmd.Process.Kill()
-			case <-stopProcess:
-			}
-		}()
-
-		_, err = cmd.Process.Wait()
-		inw.Close()
-		outr.Close()
-		stopDiagnose <- true
-		stopProcess <- true
-	}()
-
-	return nil
+func (inst *instance) Diagnose() ([]byte, bool) {
+	return nil, vmimpl.DiagnoseOpenBSD(inst.consolew)
 }
 
 // Run the given vmctl(8) command and wait for it to finish.
@@ -356,7 +319,7 @@ func (inst *instance) vmctl(args ...string) (string, error) {
 	if inst.debug {
 		log.Logf(0, "running command: vmctl %#v", args)
 	}
-	out, err := osutil.RunCmd(10*time.Second, "", "vmctl", args...)
+	out, err := osutil.RunCmd(time.Minute, "", "vmctl", args...)
 	if err != nil {
 		if inst.debug {
 			log.Logf(0, "vmctl failed: %v", err)

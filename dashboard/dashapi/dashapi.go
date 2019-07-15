@@ -54,26 +54,32 @@ func NewCustom(client, addr, key string, ctor RequestCtor, doer RequestDoer,
 
 // Build describes all aspects of a kernel build.
 type Build struct {
-	Manager           string
-	ID                string
-	OS                string
-	Arch              string
-	VMArch            string
-	SyzkallerCommit   string
-	CompilerID        string
-	KernelRepo        string
-	KernelBranch      string
-	KernelCommit      string
-	KernelCommitTitle string
-	KernelCommitDate  time.Time
-	KernelConfig      []byte
-	Commits           []string // see BuilderPoll
-	FixCommits        []FixCommit
+	Manager             string
+	ID                  string
+	OS                  string
+	Arch                string
+	VMArch              string
+	SyzkallerCommit     string
+	SyzkallerCommitDate time.Time
+	CompilerID          string
+	KernelRepo          string
+	KernelBranch        string
+	KernelCommit        string
+	KernelCommitTitle   string
+	KernelCommitDate    time.Time
+	KernelConfig        []byte
+	Commits             []string // see BuilderPoll
+	FixCommits          []Commit
 }
 
-type FixCommit struct {
-	Title string
-	BugID string
+type Commit struct {
+	Hash       string
+	Title      string
+	Author     string
+	AuthorName string
+	CC         []string
+	BugIDs     []string // ID's extracted from Reported-by tags
+	Date       time.Time
 }
 
 func (dash *Dashboard) UploadBuild(build *Build) error {
@@ -116,33 +122,53 @@ func (dash *Dashboard) BuilderPoll(manager string) (*BuilderPollResp, error) {
 //     ID must match JobPollResp.ID.
 
 type JobPollReq struct {
-	Managers []string
+	PatchTestManagers []string
+	BisectManagers    []string
 }
 
 type JobPollResp struct {
-	ID              string
-	Manager         string
-	KernelRepo      string
-	KernelBranch    string
-	KernelConfig    []byte
-	SyzkallerCommit string
-	Patch           []byte
-	ReproOpts       []byte
-	ReproSyz        []byte
-	ReproC          []byte
+	ID                string
+	Type              JobType
+	Manager           string
+	KernelRepo        string
+	KernelBranch      string
+	KernelCommit      string
+	KernelCommitTitle string
+	KernelCommitDate  time.Time
+	KernelConfig      []byte
+	SyzkallerCommit   string
+	Patch             []byte
+	ReproOpts         []byte
+	ReproSyz          []byte
+	ReproC            []byte
 }
 
 type JobDoneReq struct {
 	ID          string
 	Build       Build
 	Error       []byte
+	Log         []byte // bisection log
 	CrashTitle  string
 	CrashLog    []byte
 	CrashReport []byte
+	// Bisection results:
+	// If there is 0 commits:
+	//  - still happens on HEAD for fix bisection
+	//  - already happened on the oldest release
+	// If there is 1 commits: bisection result (cause or fix).
+	// If there are more than 1: suspected commits due to skips (broken build/boot).
+	Commits []Commit
 }
 
-func (dash *Dashboard) JobPoll(managers []string) (*JobPollResp, error) {
-	req := &JobPollReq{Managers: managers}
+type JobType int
+
+const (
+	JobTestPatch JobType = iota
+	JobBisectCause
+	JobBisectFix
+)
+
+func (dash *Dashboard) JobPoll(req *JobPollReq) (*JobPollResp, error) {
 	resp := new(JobPollResp)
 	err := dash.Query("job_poll", req, resp)
 	return resp, err
@@ -159,6 +185,34 @@ type BuildErrorReq struct {
 
 func (dash *Dashboard) ReportBuildError(req *BuildErrorReq) error {
 	return dash.Query("report_build_error", req, nil)
+}
+
+type CommitPollResp struct {
+	ReportEmail string
+	Repos       []Repo
+	Commits     []string
+}
+
+type CommitPollResultReq struct {
+	Commits []Commit
+}
+
+type Repo struct {
+	URL    string
+	Branch string
+}
+
+func (dash *Dashboard) CommitPoll() (*CommitPollResp, error) {
+	resp := new(CommitPollResp)
+	err := dash.Query("commit_poll", nil, resp)
+	return resp, err
+}
+
+func (dash *Dashboard) UploadCommits(commits []Commit) error {
+	if len(commits) == 0 {
+		return nil
+	}
+	return dash.Query("upload_commits", &CommitPollResultReq{commits}, nil)
 }
 
 // Crash describes a single kernel crash (potentially with repro).
@@ -225,18 +279,23 @@ func (dash *Dashboard) LogError(name, msg string, args ...interface{}) {
 // BugReport describes a single bug.
 // Used by dashboard external reporting.
 type BugReport struct {
+	Type              ReportType
 	Namespace         string
 	Config            []byte
 	ID                string
 	JobID             string
 	ExtID             string // arbitrary reporting ID forwarded from BugUpdate.ExtID
-	First             bool   // Set for first report for this bug.
+	First             bool   // Set for first report for this bug (Type == ReportNew).
+	Moderation        bool
 	Title             string
+	Link              string // link to the bug on dashboard
+	CreditEmail       string // email for the Reported-by tag
 	Maintainers       []string
 	CC                []string // additional CC emails
 	OS                string
 	Arch              string
 	VMArch            string
+	UserSpaceArch     string // user-space arch as kernel developers know it (rather than Go names)
 	CompilerID        string
 	KernelRepo        string
 	KernelRepoAlias   string
@@ -258,23 +317,36 @@ type BugReport struct {
 	NumCrashes        int64
 	HappenedOn        []string // list of kernel repo aliases
 
-	CrashTitle string // job execution crash title
-	Error      []byte // job execution error
-	ErrorLink  string
-	Patch      []byte // testing job patch
-	PatchLink  string
+	CrashTitle     string // job execution crash title
+	Error          []byte // job execution error
+	ErrorLink      string
+	ErrorTruncated bool // full Error text is too large and was truncated
+	PatchLink      string
+	BisectCause    *BisectResult
+	BisectFix      *BisectResult
+}
+
+type BisectResult struct {
+	Commit          *Commit   // for conclusive bisection
+	Commits         []*Commit // for inconclusive bisection
+	LogLink         string
+	CrashLogLink    string
+	CrashReportLink string
 }
 
 type BugUpdate struct {
-	ID         string
-	ExtID      string
-	Link       string
-	Status     BugStatus
-	ReproLevel ReproLevel
-	DupOf      string
-	FixCommits []string // Titles of commits that fix this bug.
-	CC         []string // Additional emails to add to CC list in future emails.
-	CrashID    int64
+	ID           string // copied from BugReport
+	JobID        string // copied from BugReport
+	ExtID        string
+	Link         string
+	Status       BugStatus
+	ReproLevel   ReproLevel
+	DupOf        string
+	OnHold       bool     // If set for open bugs, don't upstream this bug.
+	Notification bool     // Reply to a notification.
+	FixCommits   []string // Titles of commits that fix this bug.
+	CC           []string // Additional emails to add to CC list in future emails.
+	CrashID      int64
 }
 
 type BugUpdateReply struct {
@@ -294,6 +366,31 @@ type PollBugsResponse struct {
 	Reports []*BugReport
 }
 
+type BugNotification struct {
+	Type        BugNotif
+	Namespace   string
+	Config      []byte
+	ID          string
+	ExtID       string // arbitrary reporting ID forwarded from BugUpdate.ExtID
+	Title       string
+	Text        string   // meaning depends on Type
+	CC          []string // additional CC emails
+	Maintainers []string
+	// Public is what we want all involved people to see (e.g. if we notify about a wrong commit title,
+	// people need to see it and provide the right title). Not public is what we want to send only
+	// to a minimal set of recipients (our mailing list) (e.g. notification about an obsoleted bug
+	// is mostly "for the record").
+	Public bool
+}
+
+type PollNotificationsRequest struct {
+	Type string
+}
+
+type PollNotificationsResponse struct {
+	Notifications []*BugNotification
+}
+
 type PollClosedRequest struct {
 	IDs []string
 }
@@ -308,6 +405,17 @@ func (dash *Dashboard) ReportingPollBugs(typ string) (*PollBugsResponse, error) 
 	}
 	resp := new(PollBugsResponse)
 	if err := dash.Query("reporting_poll_bugs", req, resp); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (dash *Dashboard) ReportingPollNotifications(typ string) (*PollNotificationsResponse, error) {
+	req := &PollNotificationsRequest{
+		Type: typ,
+	}
+	resp := new(PollNotificationsResponse)
+	if err := dash.Query("reporting_poll_notifs", req, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -353,7 +461,9 @@ func (dash *Dashboard) UploadManagerStats(req *ManagerStatsReq) error {
 
 type (
 	BugStatus  int
+	BugNotif   int
 	ReproLevel int
+	ReportType int
 )
 
 const (
@@ -362,12 +472,32 @@ const (
 	BugStatusInvalid
 	BugStatusDup
 	BugStatusUpdate // aux info update (i.e. ExtID/Link/CC)
+	BugStatusUnCC   // don't CC sender on any future communication
+)
+
+const (
+	// Upstream bug into next reporting.
+	// If the action succeeds, reporting sends BugStatusUpstream update.
+	BugNotifUpstream BugNotif = iota
+	// Bug needs to be closed as obsoleted.
+	// If the action succeeds, reporting sends BugStatusInvalid update.
+	BugNotifObsoleted
+	// Bug fixing commit can't be discovered (wrong commit title).
+	BugNotifBadCommit
 )
 
 const (
 	ReproLevelNone ReproLevel = iota
 	ReproLevelSyz
 	ReproLevelC
+)
+
+const (
+	ReportNew         ReportType = iota // First report for this bug in the reporting stage.
+	ReportRepro                         // Found repro for an already reported bug.
+	ReportTestPatch                     // Patch testing result.
+	ReportBisectCause                   // Cause bisection result for an already reported bug.
+	ReportBisectFix                     // Fix bisection result for an already reported bug.
 )
 
 func (dash *Dashboard) Query(method string, req, reply interface{}) error {

@@ -11,6 +11,11 @@ test()
 
 test$int(a0 intptr, a1 int8, a2 int16, a3 int32, a4 int64)
 
+# String types.
+
+test$str0(a ptr[in, string])
+test$blob0(a ptr[in, array[int8]])
+
 # Opt arguments
 
 test$opt0(a0 intptr[opt])
@@ -425,6 +430,58 @@ test$length27(a0 ptr[in, explicitly_sized], a1 len[a0])
 test$length28(a0 ptr[in, explicitly_sized_union], a1 len[a0])
 test$length29(a ptr[in, static_filename])
 
+len_expr1 {
+	f11	len_expr2
+	f12	bytesize[syscall:a2, int32]
+}
+
+len_expr2 {
+	f21	len_expr3
+	f22	len_expr4
+	f23	ptr[in, len_expr4]
+	f24	ptr[in, ptr[in, len_expr4]]
+	f25	len[f21:f31, int32]
+}
+
+len_expr3 {
+	f31	int16
+	f32	bytesize[len_expr2:f21, int32]
+	f33	bytesize[len_expr2:f22:f41, int32]
+	f34	bytesize[len_expr1:f11:f22:f42, int32]
+	f35	bytesize[len_expr2:f23:f43, int32]
+	f36	bytesize[len_expr2:f24:f44, int32]
+}
+
+len_expr4 {
+	f41	array[int8, 1]
+	f42	array[int8, 3]
+	f43	array[int8, 5]
+	f44	array[int8, 6]
+}
+
+test$length30(a0 ptr[in, len_expr1], a1 bytesize[a0:f11], a2 ptr[in, bytesize[a0:f11:f21, int32]], a3 bytesize[a0:f11:f21:f31])
+
+test$offsetof0(a0 ptr[in, offsetof0])
+
+offsetof0 {
+	f0	int32
+	f1	int8
+	f2	int16
+	f3	int8
+	f4	int64
+	f5	int32:5
+	f6	int32:10
+	f7	int64
+	o0	offsetof[f0, int32]
+	o1	offsetof[f1, int32]
+	o2	offsetof[f2, int32]
+	o3	offsetof[f3, int32]
+	o4	offsetof[f4, int32]
+	o5	offsetof[f5, int32]
+	o6	offsetof[f6, int32]
+	o7	offsetof[f7, int32]
+}
+
 # Big endian
 
 test$end0(a0 ptr[in, syz_end_int_struct])
@@ -509,6 +566,22 @@ syz_bf_struct1_internal {
 syz_bf_struct1 {
 	f0	syz_bf_struct1_internal
 	f1	int8
+}
+
+syz_bf_struct2 {
+	f0	int64:4
+	f1	int64:8
+	f2	int64:12
+	f3	int64:20
+	f4	int64:16
+}
+
+syz_bf_struct3 {
+	f0	int64be:4
+	f1	int64be:8
+	f2	int64be:12
+	f3	int64be:20
+	f4	int64be:16
 }
 
 test$bf0(a0 ptr[in, syz_bf_struct0])
@@ -682,8 +755,20 @@ resource unsupported[int32]
 unsupported$0(a unsupported) unsupported
 unsupported$1(a unsupported) unsupported
 
+foo$arch_specific_const_as_array_size(a ptr[in, array[int8, ARCH_64_SPECIFIC_CONST]])
+
 # Fallback coverage.
 
 fallback$0() fd
 fallback$1(a fd)
 seccomp()
+
+# AUTO
+
+test$auto0(a const[0x42], b ptr[in, auto_struct0], c len[b], d int32)
+
+auto_struct0 {
+	f0	len[parent, int32]
+	f1	const[0x43, int32]
+	f2	int32
+}

@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/google/syzkaller/pkg/mgrconfig"
 )
@@ -26,13 +28,18 @@ type Options struct {
 	FaultCall int  `json:"fault_call,omitempty"`
 	FaultNth  int  `json:"fault_nth,omitempty"`
 
+	Leak bool `json:"leak,omitempty"` // do leak checking
+
 	// These options allow for a more fine-tuned control over the generated C code.
-	EnableTun     bool `json:"tun,omitempty"`
-	UseTmpDir     bool `json:"tmpdir,omitempty"`
-	EnableCgroups bool `json:"cgroups,omitempty"`
-	EnableNetdev  bool `json:"netdev,omitempty"`
-	ResetNet      bool `json:"resetnet,omitempty"`
-	HandleSegv    bool `json:"segv,omitempty"`
+	EnableTun        bool `json:"tun,omitempty"`
+	EnableNetDev     bool `json:"netdev,omitempty"`
+	EnableNetReset   bool `json:"resetnet,omitempty"`
+	EnableCgroups    bool `json:"cgroups,omitempty"`
+	EnableBinfmtMisc bool `json:"binfmt_misc,omitempty"`
+	EnableCloseFds   bool `json:"close_fds"`
+
+	UseTmpDir  bool `json:"tmpdir,omitempty"`
+	HandleSegv bool `json:"segv,omitempty"`
 
 	// Generate code for use with repro package to prints log messages,
 	// which allows to detect hangs.
@@ -45,48 +52,51 @@ type Options struct {
 // Invalid combinations must not be passed to Write.
 func (opts Options) Check(OS string) error {
 	switch opts.Sandbox {
-	case "", sandboxNone, sandboxNamespace, sandboxSetuid:
+	case "", sandboxNone, sandboxNamespace, sandboxSetuid, sandboxAndroidUntrustedApp:
 	default:
 		return fmt.Errorf("unknown sandbox %v", opts.Sandbox)
 	}
 	if !opts.Threaded && opts.Collide {
 		// Collide requires threaded.
-		return errors.New("Collide without Threaded")
+		return errors.New("option Collide without Threaded")
 	}
 	if !opts.Repeat {
 		if opts.Procs > 1 {
 			// This does not affect generated code.
-			return errors.New("Procs>1 without Repeat")
+			return errors.New("option Procs>1 without Repeat")
 		}
-		if opts.ResetNet {
-			return errors.New("ResetNet without Repeat")
+		if opts.EnableNetReset {
+			return errors.New("option EnableNetReset without Repeat")
 		}
 		if opts.RepeatTimes > 1 {
-			return errors.New("RepeatTimes without Repeat")
+			return errors.New("option RepeatTimes without Repeat")
 		}
 	}
 	if opts.Sandbox == "" {
 		if opts.EnableTun {
-			return errors.New("EnableTun without sandbox")
+			return errors.New("option EnableTun without sandbox")
+		}
+		if opts.EnableNetDev {
+			return errors.New("option EnableNetDev without sandbox")
 		}
 		if opts.EnableCgroups {
-			return errors.New("EnableCgroups without sandbox")
+			return errors.New("option EnableCgroups without sandbox")
 		}
-		if opts.EnableNetdev {
-			return errors.New("EnableNetdev without sandbox")
+		if opts.EnableBinfmtMisc {
+			return errors.New("option EnableBinfmtMisc without sandbox")
 		}
 	}
 	if opts.Sandbox == sandboxNamespace && !opts.UseTmpDir {
 		// This is borken and never worked.
 		// This tries to create syz-tmp dir in cwd,
 		// which will fail if procs>1 and on second run of the program.
-		return errors.New("Sandbox=namespace without UseTmpDir")
+		return errors.New("option Sandbox=namespace without UseTmpDir")
+	}
+	if opts.EnableNetReset && (opts.Sandbox == "" || opts.Sandbox == sandboxSetuid) {
+		return errors.New("option EnableNetReset without sandbox")
 	}
 	if opts.EnableCgroups && !opts.UseTmpDir {
-		return errors.New("EnableCgroups without UseTmpDir")
-	}
-	if opts.ResetNet && (opts.Sandbox == "" || opts.Sandbox == sandboxSetuid) {
-		return errors.New("ResetNet without sandbox")
+		return errors.New("option EnableCgroups without UseTmpDir")
 	}
 	return opts.checkLinuxOnly(OS)
 }
@@ -95,50 +105,65 @@ func (opts Options) checkLinuxOnly(OS string) error {
 	if OS == linux {
 		return nil
 	}
-	if opts.EnableTun {
-		return fmt.Errorf("EnableTun is not supported on %v", OS)
+	if opts.EnableTun && !(OS == openbsd || OS == freebsd) {
+		return fmt.Errorf("option EnableTun is not supported on %v", OS)
+	}
+	if opts.EnableNetDev {
+		return fmt.Errorf("option EnableNetDev is not supported on %v", OS)
+	}
+	if opts.EnableNetReset {
+		return fmt.Errorf("option EnableNetReset is not supported on %v", OS)
 	}
 	if opts.EnableCgroups {
-		return fmt.Errorf("EnableCgroups is not supported on %v", OS)
+		return fmt.Errorf("option EnableCgroups is not supported on %v", OS)
 	}
-	if opts.EnableNetdev {
-		return fmt.Errorf("EnableNetdev is not supported on %v", OS)
+	if opts.EnableBinfmtMisc {
+		return fmt.Errorf("option EnableBinfmtMisc is not supported on %v", OS)
 	}
-	if opts.ResetNet {
-		return fmt.Errorf("ResetNet is not supported on %v", OS)
+	if opts.EnableCloseFds {
+		return fmt.Errorf("EnableCloseFds is not supported on %v", OS)
 	}
-	if opts.Sandbox == sandboxNamespace || opts.Sandbox == sandboxSetuid {
-		return fmt.Errorf("Sandbox=%v is not supported on %v", opts.Sandbox, OS)
+	if opts.Sandbox == sandboxNamespace ||
+		(opts.Sandbox == sandboxSetuid && !(OS == openbsd || OS == freebsd)) ||
+		opts.Sandbox == sandboxAndroidUntrustedApp {
+		return fmt.Errorf("option Sandbox=%v is not supported on %v", opts.Sandbox, OS)
 	}
 	if opts.Fault {
-		return fmt.Errorf("Fault is not supported on %v", OS)
+		return fmt.Errorf("option Fault is not supported on %v", OS)
+	}
+	if opts.Leak {
+		return fmt.Errorf("option Leak is not supported on %v", OS)
 	}
 	return nil
 }
 
 func DefaultOpts(cfg *mgrconfig.Config) Options {
 	opts := Options{
-		Threaded:      true,
-		Collide:       true,
-		Repeat:        true,
-		Procs:         cfg.Procs,
-		Sandbox:       cfg.Sandbox,
-		EnableTun:     true,
-		EnableCgroups: true,
-		EnableNetdev:  true,
-		ResetNet:      true,
-		UseTmpDir:     true,
-		HandleSegv:    true,
-		Repro:         true,
+		Threaded:         true,
+		Collide:          true,
+		Repeat:           true,
+		Procs:            cfg.Procs,
+		Sandbox:          cfg.Sandbox,
+		EnableTun:        true,
+		EnableNetDev:     true,
+		EnableNetReset:   true,
+		EnableCgroups:    true,
+		EnableBinfmtMisc: true,
+		EnableCloseFds:   true,
+		UseTmpDir:        true,
+		HandleSegv:       true,
+		Repro:            true,
 	}
 	if cfg.TargetOS != linux {
 		opts.EnableTun = false
+		opts.EnableNetDev = false
+		opts.EnableNetReset = false
 		opts.EnableCgroups = false
-		opts.EnableNetdev = false
-		opts.ResetNet = false
+		opts.EnableBinfmtMisc = false
+		opts.EnableCloseFds = false
 	}
 	if cfg.Sandbox == "" || cfg.Sandbox == "setuid" {
-		opts.ResetNet = false
+		opts.EnableNetReset = false
 	}
 	if err := opts.Check(cfg.TargetOS); err != nil {
 		panic(fmt.Sprintf("DefaultOpts created bad opts: %v", err))
@@ -156,6 +181,9 @@ func (opts Options) Serialize() []byte {
 
 func DeserializeOptions(data []byte) (Options, error) {
 	var opts Options
+	// Before EnableCloseFds was added, close_fds() was always called,
+	// so default to true.
+	opts.EnableCloseFds = true
 	if err := json.Unmarshal(data, &opts); err == nil {
 		return opts, nil
 	}
@@ -195,4 +223,68 @@ func DeserializeOptions(data []byte) (Options, error) {
 		return opts, nil
 	}
 	return opts, err
+}
+
+type Feature struct {
+	Description string
+	Enabled     bool
+}
+
+type Features map[string]Feature
+
+func defaultFeatures(value bool) Features {
+	return map[string]Feature{
+		"tun":         {"setup and use /dev/tun for packet injection", value},
+		"net_dev":     {"setup more network devices for testing", value},
+		"net_reset":   {"reset network namespace between programs", value},
+		"cgroups":     {"setup cgroups for testing", value},
+		"binfmt_misc": {"setup binfmt_misc for testing", value},
+		"close_fds":   {"close fds after each program", value},
+	}
+}
+
+func ParseFeaturesFlags(enable string, disable string, defaultValue bool) (Features, error) {
+	if enable == "none" && disable == "none" {
+		return defaultFeatures(defaultValue), nil
+	}
+	if enable != "none" && disable != "none" {
+		return nil, fmt.Errorf("can't use -enable and -disable flags at the same time")
+	}
+	if enable == "all" || disable == "" {
+		return defaultFeatures(true), nil
+	}
+	if disable == "all" || enable == "" {
+		return defaultFeatures(false), nil
+	}
+	var items []string
+	var features Features
+	if enable != "none" {
+		items = strings.Split(enable, ",")
+		features = defaultFeatures(false)
+	} else {
+		items = strings.Split(disable, ",")
+		features = defaultFeatures(true)
+	}
+	for _, item := range items {
+		if _, ok := features[item]; !ok {
+			return nil, fmt.Errorf("unknown feature specified: %s", item)
+		}
+		feature := features[item]
+		feature.Enabled = (enable != "none")
+		features[item] = feature
+	}
+	return features, nil
+}
+
+func PrintAvailableFeaturesFlags() {
+	fmt.Printf("Available features for -enable and -disable:\n")
+	features := defaultFeatures(false)
+	var names []string
+	for name := range features {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Printf("  %s - %s\n", name, features[name].Description)
+	}
 }

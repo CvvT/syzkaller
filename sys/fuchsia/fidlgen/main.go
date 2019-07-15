@@ -13,24 +13,9 @@ import (
 	"github.com/google/syzkaller/pkg/ast"
 	"github.com/google/syzkaller/pkg/compiler"
 	"github.com/google/syzkaller/pkg/osutil"
+	"github.com/google/syzkaller/sys/fuchsia/layout"
 	"github.com/google/syzkaller/sys/targets"
 )
-
-var layerToLibs = map[string][]string{
-	"zircon": {
-		"fuchsia-mem",
-		"fuchsia-cobalt",
-		"fuchsia-process",
-		"fuchsia-io",
-	},
-	"garnet": {
-		"fuchsia.devicesettings",
-		"fuchsia.mediacodec",
-		"fuchsia.timezone",
-		"fuchsia.power",
-		"fuchsia.scpi",
-	},
-}
 
 func main() {
 	targetArch := os.Getenv("TARGETARCH")
@@ -49,7 +34,7 @@ func main() {
 		sourceDir,
 		"out",
 		arch,
-		fmt.Sprintf("host_%s", arch),
+		"host_x64",
 		"fidlgen",
 	)
 	if !osutil.IsExist(fidlgenPath) {
@@ -57,36 +42,17 @@ func main() {
 	}
 
 	var newFiles []string
+	for _, fidlLib := range layout.AllFidlLibraries {
+		jsonPath := filepath.Join(sourceDir, "out", arch, fidlLib.PathToJSONIr())
+		txtPathBase := strings.Replace(strings.Join(fidlLib.FqName, "_"), "^fuchsia", "fidl", 1)
 
-	for layer := range layerToLibs {
-		jsonPathBase := filepath.Join(
-			sourceDir,
-			"out",
-			arch,
-			"fidling/gen",
-			layer,
-			"public/fidl",
+		txtPath := fidlgen(
+			fidlgenPath,
+			jsonPath,
+			txtPathBase,
 		)
 
-		for _, lib := range layerToLibs[layer] {
-			jsonPath := filepath.Join(
-				jsonPathBase,
-				lib,
-				fmt.Sprintf("%s.fidl.json", lib),
-			)
-
-			txtPathBase := lib
-			txtPathBase = strings.Replace(txtPathBase, "fuchsia.", "fidl_", 1)
-			txtPathBase = strings.Replace(txtPathBase, "fuchsia-", "fidl_", 1)
-
-			txtPath := fidlgen(
-				fidlgenPath,
-				jsonPath,
-				txtPathBase,
-			)
-
-			newFiles = append(newFiles, txtPath)
-		}
+		newFiles = append(newFiles, txtPath)
 	}
 
 	var errorPos ast.Pos
@@ -100,7 +66,13 @@ func main() {
 	}
 
 	unused := make(map[ast.Node]bool)
-	for _, n := range compiler.CollectUnused(desc, target) {
+
+	nodes, err := compiler.CollectUnused(desc, target, nil)
+	if err != nil {
+		failf("collect unused nodes failed: %v", err)
+	}
+
+	for _, n := range nodes {
 		unused[n] = true
 	}
 
@@ -138,7 +110,7 @@ func fidlgen(fidlgenPath string, jsonPath string, txtPathBase string) string {
 		failf("fidlgen failed: %v", err)
 	}
 
-	return fmt.Sprintf("%s.txt", txtPathBase)
+	return fmt.Sprintf("%s.syz.txt", txtPathBase)
 }
 
 func failf(msg string, args ...interface{}) {

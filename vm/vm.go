@@ -21,6 +21,7 @@ import (
 
 	// Import all VM implementations, so that users only need to import vm.
 	_ "github.com/google/syzkaller/vm/adb"
+	_ "github.com/google/syzkaller/vm/bhyve"
 	_ "github.com/google/syzkaller/vm/gce"
 	_ "github.com/google/syzkaller/vm/gvisor"
 	_ "github.com/google/syzkaller/vm/isolated"
@@ -42,8 +43,9 @@ type Instance struct {
 }
 
 var (
-	Shutdown   = vmimpl.Shutdown
-	ErrTimeout = vmimpl.ErrTimeout
+	Shutdown               = vmimpl.Shutdown
+	ErrTimeout             = vmimpl.ErrTimeout
+	_          BootErrorer = vmimpl.BootError{}
 )
 
 type BootErrorer interface {
@@ -54,7 +56,7 @@ type BootErrorer interface {
 // (i.e. creation of instances out-of-thin-air). Overcommit is used during image
 // and patch testing in syz-ci when it just asks for more than specified in config
 // instances. Generally virtual machines (qemu, gce) support overcommit,
-// while physical machines (adb, isolated) do not. Strictly saying, we should
+// while physical machines (adb, isolated) do not. Strictly speaking, we should
 // never use overcommit and use only what's specified in config, because we
 // override resource limits specified in config (e.g. can OOM). But it works and
 // makes lots of things much simpler.
@@ -126,7 +128,7 @@ func (inst *Instance) Run(timeout time.Duration, stop <-chan bool, command strin
 	return inst.impl.Run(timeout, stop, command)
 }
 
-func (inst *Instance) Diagnose() bool {
+func (inst *Instance) Diagnose() ([]byte, bool) {
 	return inst.impl.Diagnose()
 }
 
@@ -135,22 +137,33 @@ func (inst *Instance) Close() {
 	os.RemoveAll(inst.workdir)
 }
 
+type ExitCondition int
+
+const (
+	// The program is allowed to exit after timeout.
+	ExitTimeout = ExitCondition(1 << iota)
+	// The program is allowed to exit with no errors.
+	ExitNormal
+	// The program is allowed to exit with errors.
+	ExitError
+)
+
 // MonitorExecution monitors execution of a program running inside of a VM.
 // It detects kernel oopses in output, lost connections, hangs, etc.
 // outc/errc is what vm.Instance.Run returns, reporter parses kernel output for oopses.
-// If canExit is false and the program exits, it is treated as an error.
+// Exit says which exit modes should be considered as errors/OK.
 // Returns a non-symbolized crash report, or nil if no error happens.
 func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
-	reporter report.Reporter, canExit bool) (rep *report.Report) {
+	reporter report.Reporter, exit ExitCondition) (rep *report.Report) {
 	mon := &monitor{
 		inst:     inst,
 		outc:     outc,
 		errc:     errc,
 		reporter: reporter,
-		canExit:  canExit,
+		exit:     exit,
 	}
 	lastExecuteTime := time.Now()
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(tickerPeriod)
 	defer ticker.Stop()
 	for {
 		select {
@@ -159,15 +172,30 @@ func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
 			case nil:
 				// The program has exited without errors,
 				// but wait for kernel output in case there is some delayed oops.
-				return mon.extractError("")
+				crash := ""
+				if mon.exit&ExitNormal == 0 {
+					crash = lostConnectionCrash
+				}
+				return mon.extractError(crash)
 			case ErrTimeout:
+				if mon.exit&ExitTimeout == 0 {
+					return mon.extractError(timeoutCrash)
+				}
 				return nil
 			default:
 				// Note: connection lost can race with a kernel oops message.
 				// In such case we want to return the kernel oops.
-				return mon.extractError("lost connection to test machine")
+				crash := ""
+				if mon.exit&ExitError == 0 {
+					crash = lostConnectionCrash
+				}
+				return mon.extractError(crash)
 			}
-		case out := <-outc:
+		case out, ok := <-outc:
+			if !ok {
+				outc = nil
+				continue
+			}
 			lastPos := len(mon.output)
 			mon.output = append(mon.output, out...)
 			if bytes.Contains(mon.output[lastPos:], executingProgram1) ||
@@ -181,7 +209,19 @@ func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
 				copy(mon.output, mon.output[len(mon.output)-beforeContext:])
 				mon.output = mon.output[:beforeContext]
 			}
+			// Find the starting position for crash matching on the next iteration.
+			// We step back from the end of output by maxErrorLength to handle the case
+			// when a crash line is currently split/incomplete. And then we try to find
+			// the preceding '\n' to have a full line. This is required to handle
+			// the case when a particular pattern is ignored as crash, but a suffix
+			// of the pattern is detected as crash (e.g. "ODEBUG:" is trimmed to "BUG:").
 			mon.matchPos = len(mon.output) - maxErrorLength
+			for i := 0; i < maxErrorLength; i++ {
+				if mon.matchPos <= 0 || mon.output[mon.matchPos-1] == '\n' {
+					break
+				}
+				mon.matchPos--
+			}
 			if mon.matchPos < 0 {
 				mon.matchPos = 0
 			}
@@ -197,14 +237,19 @@ func (inst *Instance) MonitorExecution(outc <-chan []byte, errc <-chan error,
 			// in 140-280s detection delay.
 			// So the current timeout is 5 mins (300s).
 			// We don't want it to be too long too because it will waste time on real hangs.
-			if time.Since(lastExecuteTime) < 5*time.Minute {
+			if time.Since(lastExecuteTime) < NoOutputTimeout {
 				break
 			}
-			if inst.Diagnose() {
+			diag, wait := inst.Diagnose()
+			if len(diag) > 0 {
+				mon.output = append(mon.output, "DIAGNOSIS:\n"...)
+				mon.output = append(mon.output, diag...)
+			}
+			if wait {
 				mon.waitForOutput()
 			}
 			rep := &report.Report{
-				Title:      "no output from test machine",
+				Title:      noOutputCrash,
 				Output:     mon.output,
 				Suppressed: report.IsSuppressed(mon.reporter, mon.output),
 			}
@@ -220,24 +265,28 @@ type monitor struct {
 	outc     <-chan []byte
 	errc     <-chan error
 	reporter report.Reporter
-	canExit  bool
+	exit     ExitCondition
 	output   []byte
 	matchPos int
 }
 
 func (mon *monitor) extractError(defaultError string) *report.Report {
+	if defaultError != "" {
+		// N.B. we always wait below for other errors.
+		diag, _ := mon.inst.Diagnose()
+		if len(diag) > 0 {
+			mon.output = append(mon.output, "DIAGNOSIS:\n"...)
+			mon.output = append(mon.output, diag...)
+		}
+	}
 	// Give it some time to finish writing the error message.
-	mon.inst.Diagnose()
 	mon.waitForOutput()
-	if bytes.Contains(mon.output, []byte("SYZ-FUZZER: PREEMPTED")) {
+	if bytes.Contains(mon.output, []byte(fuzzerPreemptedStr)) {
 		return nil
 	}
 	if !mon.reporter.ContainsCrash(mon.output[mon.matchPos:]) {
 		if defaultError == "" {
-			if mon.canExit {
-				return nil
-			}
-			defaultError = "lost connection to test machine"
+			return nil
 		}
 		rep := &report.Report{
 			Title:      defaultError,
@@ -245,6 +294,16 @@ func (mon *monitor) extractError(defaultError string) *report.Report {
 			Suppressed: report.IsSuppressed(mon.reporter, mon.output),
 		}
 		return rep
+	}
+	if defaultError == "" {
+		diag, wait := mon.inst.Diagnose()
+		if len(diag) > 0 {
+			mon.output = append(mon.output, "DIAGNOSIS:\n"...)
+			mon.output = append(mon.output, diag...)
+		}
+		if wait {
+			mon.waitForOutput()
+		}
 	}
 	rep := mon.reporter.Parse(mon.output[mon.matchPos:])
 	if rep == nil {
@@ -265,28 +324,42 @@ func (mon *monitor) extractError(defaultError string) *report.Report {
 }
 
 func (mon *monitor) waitForOutput() {
-	timer := time.NewTimer(10 * time.Second)
+	timer := time.NewTimer(waitForOutputTimeout)
+	defer timer.Stop()
 	for {
 		select {
 		case out, ok := <-mon.outc:
 			if !ok {
-				timer.Stop()
 				return
 			}
 			mon.output = append(mon.output, out...)
 		case <-timer.C:
+			return
+		case <-Shutdown:
 			return
 		}
 	}
 }
 
 const (
-	beforeContext  = 1024 << 10
-	afterContext   = 128 << 10
-	maxErrorLength = 512
+	maxErrorLength = 256
+
+	lostConnectionCrash  = "lost connection to test machine"
+	noOutputCrash        = "no output from test machine"
+	timeoutCrash         = "timed out"
+	executingProgramStr1 = "executing program"  // syz-fuzzer output
+	executingProgramStr2 = "executed programs:" // syz-execprog output
+	fuzzerPreemptedStr   = "SYZ-FUZZER: PREEMPTED"
 )
 
 var (
-	executingProgram1 = []byte("executing program")  // syz-fuzzer output
-	executingProgram2 = []byte("executed programs:") // syz-execprog output
+	executingProgram1 = []byte(executingProgramStr1)
+	executingProgram2 = []byte(executingProgramStr2)
+
+	beforeContext = 1024 << 10
+	afterContext  = 128 << 10
+
+	NoOutputTimeout      = 5 * time.Minute
+	tickerPeriod         = 10 * time.Second
+	waitForOutputTimeout = 10 * time.Second
 )

@@ -63,8 +63,8 @@ tcm_handle {
 
 type tcamsg[FAMILY] {
 	family		const[FAMILY, int8]
-	tca__pad1	int8
-	tca__pad2	int16
+	tca__pad1	const[0, int8]
+	tca__pad2	const[0, int16]
 }
 
 qdisc_policy [
@@ -293,14 +293,14 @@ tc_cbq_fopt {
 
 tc_cbs_qopt {
 	offload		int8
-	_pad		array[int8, 3]
+	_pad		array[const[0, int8], 3]
 	hicredit	int32
 	locredit	int32
 	idleslope	int32
 	sendslope	int32
 }
 
-# TODO: limit >= qth_max >= qth_min
+# NEED: limit >= qth_max >= qth_min
 tc_red_qopt {
 	limit		int32
 	qth_min		int32
@@ -316,7 +316,7 @@ tc_gred_sopt {
 	def_DP	int32[0:16]
 	grio	int8[0:1]
 	flags	int8[0:8]
-	pad1	int16
+	pad1	const[0, int16]
 }
 
 tc_gred_qopt {
@@ -558,14 +558,17 @@ f_bpf_options [
 	TCA_BPF_ACT		nlattr[TCA_BPF_ACT, tca_actions]
 	TCA_BPF_POLICE		nlattr[TCA_BPF_POLICE, tca_polices]
 	TCA_BPF_CLASSID		nlattr[TCA_BPF_CLASSID, tcm_handle]
-# TODO: TCA_BPF_OPS should equal to TCA_BPF_OPS_LEN * sizeof(struct sock_filter)
-	TCA_BPF_OPS_LEN		nlattr[TCA_BPF_OPS_LEN, int16[0:10]]
-	TCA_BPF_OPS		nlattr[TCA_BPF_OPS, array[sock_filter]]
-	TCA_BPF_FD		nlattr[TCA_BPF_FD, fd]
+	TCA_BPF_OPS		tca_bpf_ops
+	TCA_BPF_FD		nlattr[TCA_BPF_FD, fd_bpf_prog]
 	TCA_BPF_NAME		nlattr[TCA_BPF_NAME, string[filename]]
 	TCA_BPF_FLAGS		nlattr[TCA_BPF_FLAGS, int32[0:1]]
 	TCA_BPF_FLAGS_GEN	nlattr[TCA_BPF_FLAGS_GEN, int32[0:8]]
 ] [varlen]
+
+tca_bpf_ops {
+	TCA_BPF_OPS_LEN	nlattr[TCA_BPF_OPS_LEN, len[tca_bpf_ops:TCA_BPF_OPS:payload, int16]]
+	TCA_BPF_OPS	nlattr[TCA_BPF_OPS, array[sock_filter]]
+} [packed]
 
 f_cgroup_options [
 	TCA_CGROUP_ACT		nlattr[TCA_CGROUP_ACT, tca_actions]
@@ -664,7 +667,7 @@ tc_rsvp_pinfo {
 	protocol	flags[ipv4_types, int8]
 	tunnelid	int8
 	tunnelhdr	int8
-	pad		int8
+	pad		const[0, int8]
 }
 
 tc_u32_sel {
@@ -679,7 +682,7 @@ tc_u32_sel {
 	keys		array[tc_u32_key, 0:128]
 }
 
-# TODO: (mark.val & mark.mask) should equal to mark.val
+# NEED: (mark.val & mark.mask) should equal to mark.val
 tc_u32_mark {
 	val	int32
 	mask	int32
@@ -747,7 +750,7 @@ tca_ife_meta_policy [
 	IFE_META_TCINDEX	nlattr[IFE_META_TCINDEX, optional[int16]]
 ] [varlen]
 
-#TODO: add TCA_IPT_TARG support
+# TODO: add TCA_IPT_TARG support
 m_ipt_options [
 	TCA_IPT_TABLE	nlattr[TCA_IPT_TABLE, string[ipt_tables, IFNAMSIZ]]
 	TCA_IPT_HOOK	nlattr[TCA_IPT_HOOK, flags[nf_inet_hooks, int32]]
@@ -999,7 +1002,7 @@ type tcf_ematch_hdr[KIND, PAYLOAD] {
 	matchid	int16
 	kind	const[KIND, int16]
 	flags	int16
-	pad	int16
+	pad	const[0, int16]
 	payload	PAYLOAD
 } [align_4]
 
@@ -1015,9 +1018,8 @@ tcf_em_cmp {
 
 tcf_em_nbyte {
 	off	int32
-	len	int16:12[0:10]
+	len	bytesize[payload, int16:12]
 	layer	flags[tcf_layers, int8:4]
-# TODO: The payload data len should be equal to tcf_em_nbyte.len
 	payload	array[int8, 0:10]
 } [align_4]
 
@@ -1070,11 +1072,10 @@ tc_estimator {
 	ewma_log	int8
 }
 
-stab_policy [
+stab_policy {
 	TCA_STAB_BASE	nlattr[TCA_STAB_BASE, tc_sizespec]
-# TODO: stab data should be tc_sizespec.tsize * sizeof(__u16)
-	TCA_STAB_DATA	nlattr[TCA_STAB_DATA, array[int16, 0:10]]
-] [varlen]
+	TCA_STAB_DATA	nlattr[TCA_STAB_DATA, array[int16]]
+} [packed]
 
 tc_sizespec {
 	cell_log	int8
@@ -1084,7 +1085,7 @@ tc_sizespec {
 	linklayer	flags[linklayer, int32]
 	mpu		int32
 	mtu		int32
-	tsize		int32[0:10]
+	tsize		len[stab_policy:TCA_STAB_DATA:payload, int32]
 }
 
 tcm_handle_offsets = 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 0xffe0, 0xfff1, 0xfff2, 0xfff3, 0xffff

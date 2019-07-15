@@ -4,6 +4,11 @@
 package host
 
 import (
+	"time"
+
+	"github.com/google/syzkaller/pkg/csource"
+	"github.com/google/syzkaller/pkg/log"
+	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/prog"
 )
 
@@ -11,6 +16,7 @@ import (
 // For unsupported syscalls it also returns reason as to why it is unsupported.
 func DetectSupportedSyscalls(target *prog.Target, sandbox string) (
 	map[*prog.Syscall]bool, map[*prog.Syscall]string, error) {
+	log.Logf(1, "detecting supported syscalls")
 	supported := make(map[*prog.Syscall]bool)
 	unsupported := make(map[*prog.Syscall]string)
 	// Akaros does not have own host and parasitizes on some other OS.
@@ -24,9 +30,24 @@ func DetectSupportedSyscalls(target *prog.Target, sandbox string) (
 		ok, reason := false, ""
 		switch c.CallName {
 		case "syz_execute_func":
-			ok = true
+			// syz_execute_func caused multiple problems:
+			// 1. First it lead to corpus exploision. The program used existing values in registers
+			// to pollute output area. We tried to zero registers (though, not reliably).
+			// 2. It lead to explosion again. The exact mechanics are unknown, here is one sample:
+			// syz_execute_func(&(0x7f0000000440)="f2af91930f0124eda133fa20430fbafce842f66188d0d4
+			//	430fc7f314c1ab5bf9e2f9660f3a0fae5e090000ba023c1fb63ac4817d73d74ec482310d46f44
+			//	9f216c863fa438036a91bdbae95aaaa420f383c02c401405c6bfd49d768d768f833fefbab6464
+			//	660f38323c8f26dbc1a1fe5ff6f6df0804f4c4efa59c0f01c4288ba6452e000054c4431d5cc100")
+			// 3. The code can also execute syscalls (and it is know to), but it's not subject to
+			// target.SanitizeCall. As the result it can do things that programs are not supposed to do.
+			// 4. Besides linux, corpus explosion also happens on freebsd and is clearly attributable
+			// to syz_execute_func based on corpus contents. Mechanics are also not known.
+			// It also did not cause finding of any new bugs (at least not that I know of).
+			// Let's disable it for now until we figure out how to resolve all these problems.
+			ok = false
+			reason = "always disabled for now"
 		default:
-			ok, reason = isSupported(c, sandbox)
+			ok, reason = isSupported(c, target, sandbox)
 		}
 		if ok {
 			supported[c] = true
@@ -45,8 +66,10 @@ var testFallback = false
 const (
 	FeatureCoverage = iota
 	FeatureComparisons
+	FeatureExtraCoverage
 	FeatureSandboxSetuid
 	FeatureSandboxNamespace
+	FeatureSandboxAndroidUntrustedApp
 	FeatureFaultInjection
 	FeatureLeakChecking
 	FeatureNetworkInjection
@@ -63,8 +86,6 @@ type Feature struct {
 type Features [numFeatures]Feature
 
 var checkFeature [numFeatures]func() string
-var setupFeature [numFeatures]func() error
-var callbFeature [numFeatures]func()
 
 func unconditionallyEnabled() string { return "" }
 
@@ -74,14 +95,16 @@ func unconditionallyEnabled() string { return "" }
 func Check(target *prog.Target) (*Features, error) {
 	const unsupported = "support is not implemented in syzkaller"
 	res := &Features{
-		FeatureCoverage:         {Name: "code coverage", Reason: unsupported},
-		FeatureComparisons:      {Name: "comparison tracing", Reason: unsupported},
-		FeatureSandboxSetuid:    {Name: "setuid sandbox", Reason: unsupported},
-		FeatureSandboxNamespace: {Name: "namespace sandbox", Reason: unsupported},
-		FeatureFaultInjection:   {Name: "fault injection", Reason: unsupported},
-		FeatureLeakChecking:     {Name: "leak checking", Reason: unsupported},
-		FeatureNetworkInjection: {Name: "net packed injection", Reason: unsupported},
-		FeatureNetworkDevices:   {Name: "net device setup", Reason: unsupported},
+		FeatureCoverage:                   {Name: "code coverage", Reason: unsupported},
+		FeatureComparisons:                {Name: "comparison tracing", Reason: unsupported},
+		FeatureExtraCoverage:              {Name: "extra coverage", Reason: unsupported},
+		FeatureSandboxSetuid:              {Name: "setuid sandbox", Reason: unsupported},
+		FeatureSandboxNamespace:           {Name: "namespace sandbox", Reason: unsupported},
+		FeatureSandboxAndroidUntrustedApp: {Name: "Android sandbox", Reason: unsupported},
+		FeatureFaultInjection:             {Name: "fault injection", Reason: unsupported},
+		FeatureLeakChecking:               {Name: "leak checking", Reason: unsupported},
+		FeatureNetworkInjection:           {Name: "net packet injection", Reason: unsupported},
+		FeatureNetworkDevices:             {Name: "net device setup", Reason: unsupported},
 	}
 	if target.OS == "akaros" || target.OS == "test" {
 		return res, nil
@@ -102,29 +125,20 @@ func Check(target *prog.Target) (*Features, error) {
 
 // Setup enables and does any one-time setup for the requested features on the host.
 // Note: this can be called multiple times and must be idempotent.
-func Setup(target *prog.Target, features *Features) (func(), error) {
-	if target.OS == "akaros" || target.OS == "test" {
-		return nil, nil
+func Setup(target *prog.Target, features *Features, featureFlags csource.Features, executor string) error {
+	if target.OS == "akaros" {
+		return nil
 	}
-	var callback func()
-	for n, setup := range setupFeature {
-		if setup == nil || !features[n].Enabled {
-			continue
-		}
-		if err := setup(); err != nil {
-			return nil, err
-		}
-		cb := callbFeature[n]
-		if cb != nil {
-			prev := callback
-			callback = func() {
-				cb()
-				if prev != nil {
-					prev()
-				}
-			}
-
-		}
+	args := []string{"setup"}
+	if features[FeatureLeakChecking].Enabled {
+		args = append(args, "leak")
 	}
-	return callback, nil
+	if features[FeatureFaultInjection].Enabled {
+		args = append(args, "fault")
+	}
+	if target.OS == "linux" && featureFlags["binfmt_misc"].Enabled {
+		args = append(args, "binfmt_misc")
+	}
+	_, err := osutil.RunCmd(time.Minute, "", executor, args...)
+	return err
 }

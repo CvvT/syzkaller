@@ -47,7 +47,7 @@ func TestMinimize(t *testing.T) {
 				return len(p.Calls) == 2 && p.Calls[0].Meta.Name == "mmap" && p.Calls[1].Meta.Name == "pipe2"
 			},
 			"mmap(&(0x7f0000000000/0x1000)=nil, 0x1000, 0x0, 0x10, 0xffffffffffffffff, 0x0)\n" +
-				"pipe2(&(0x7f0000000000), 0x0)\n",
+				"pipe2(0x0, 0x0)\n",
 			1,
 		},
 		// Remove two dependent calls.
@@ -80,7 +80,7 @@ func TestMinimize(t *testing.T) {
 				return p.String() == "mmap-write-sched_yield"
 			},
 			"mmap(&(0x7f0000000000/0x1000)=nil, 0x1000, 0x0, 0x10, 0xffffffffffffffff, 0x0)\n" +
-				"write(0xffffffffffffffff, &(0x7f0000000000), 0x0)\n" +
+				"write(0xffffffffffffffff, 0x0, 0x0)\n" +
 				"sched_yield()\n",
 			2,
 		},
@@ -95,14 +95,34 @@ func TestMinimize(t *testing.T) {
 				return p.String() == "mmap-write-sched_yield"
 			},
 			"mmap(&(0x7f0000000000/0x1000)=nil, 0x1000, 0x0, 0x10, 0xffffffffffffffff, 0x0)\n" +
-				"write(0xffffffffffffffff, &(0x7f0000000000), 0x0)\n" +
+				"write(0xffffffffffffffff, 0x0, 0x0)\n" +
 				"sched_yield()\n",
+			-1,
+		},
+		// Minimize pointer.
+		{
+			"pipe2(&(0x7f0000001000)={0xffffffffffffffff, 0xffffffffffffffff}, 0x0)\n",
+			-1,
+			func(p *Prog, callIndex int) bool {
+				return len(p.Calls) == 1 && p.Calls[0].Meta.Name == "pipe2"
+			},
+			"pipe2(0x0, 0x0)\n",
+			-1,
+		},
+		// Minimize pointee.
+		{
+			"pipe2(&(0x7f0000001000)={0xffffffffffffffff, 0xffffffffffffffff}, 0x0)\n",
+			-1,
+			func(p *Prog, callIndex int) bool {
+				return len(p.Calls) == 1 && p.Calls[0].Meta.Name == "pipe2" && p.Calls[0].Args[0].(*PointerArg).Address != 0
+			},
+			"pipe2(&(0x7f0000001000), 0x0)\n",
 			-1,
 		},
 	}
 	target, _, _ := initTest(t)
 	for ti, test := range tests {
-		p, err := target.Deserialize([]byte(test.orig))
+		p, err := target.Deserialize([]byte(test.orig), Strict)
 		if err != nil {
 			t.Fatalf("failed to deserialize original program #%v: %v", ti, err)
 		}
@@ -122,15 +142,23 @@ func TestMinimize(t *testing.T) {
 func TestMinimizeRandom(t *testing.T) {
 	target, rs, iters := initTest(t)
 	iters /= 10 // Long test.
+	r := rand.New(rs)
 	for i := 0; i < iters; i++ {
 		for _, crash := range []bool{false, true} {
 			p := target.Generate(rs, 5, nil)
-			Minimize(p, len(p.Calls)-1, crash, func(p1 *Prog, callIndex int) bool {
-				return false
-			})
-			Minimize(p, len(p.Calls)-1, crash, func(p1 *Prog, callIndex int) bool {
+			copyP := p.Clone()
+			minP, _ := Minimize(p, len(p.Calls)-1, crash, func(p1 *Prog, callIndex int) bool {
+				if r.Intn(2) == 0 {
+					return false
+				}
+				copyP = p1.Clone()
 				return true
 			})
+			got := string(minP.Serialize())
+			want := string(copyP.Serialize())
+			if got != want {
+				t.Fatalf("program:\n%s\ngot:\n%v\nwant:\n%s", string(p.Serialize()), got, want)
+			}
 		}
 	}
 }
