@@ -13,6 +13,12 @@ resource fd_tty[fd]
 
 openat$ptmx(fd const[AT_FDCWD], file ptr[in, string["/dev/ptmx"]], flags flags[open_flags], mode const[0]) fd_tty
 syz_open_pts(fd fd_tty, flags flags[open_flags]) fd_tty
+
+# read, write
+write$TTY(fd fd_tty, buf buffer[in], count len[buf])
+read$TTY(fd fd_tty, buf buffer[out], count len[buf])
+close$TTY(fd fd_tty)
+
 ioctl$TCGETS(fd fd_tty, cmd const[TCGETS], arg ptr[out, termios])
 ioctl$TCSETS(fd fd_tty, cmd const[TCSETS], arg ptr[in, termios])
 ioctl$TCSETSW(fd fd_tty, cmd const[TCSETSW], arg ptr[in, termios])
