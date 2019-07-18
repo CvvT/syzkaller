@@ -96,15 +96,21 @@ func (wq *WorkQueue) dequeue() (item interface{}) {
 	wq.mu.RUnlock()
 	wq.mu.Lock()
 	wantCandidates := false
-	if len(wq.triageCandidate) != 0 {
-		last := len(wq.triageCandidate) - 1
-		item = wq.triageCandidate[last]
-		wq.triageCandidate = wq.triageCandidate[:last]
-	} else if len(wq.candidate) != 0 {
+	// if len(wq.triageCandidate) != 0 {
+	// 	last := len(wq.triageCandidate) - 1
+	// 	item = wq.triageCandidate[last]
+	// 	wq.triageCandidate = wq.triageCandidate[:last]
+	// } else
+
+	if len(wq.candidate) != 0 {
 		last := len(wq.candidate) - 1
 		item = wq.candidate[last]
 		wq.candidate = wq.candidate[:last]
 		wantCandidates = len(wq.candidate) < wq.procs
+	} else if len(wq.triageCandidate) != 0 {
+		last := len(wq.triageCandidate) - 1
+		item = wq.triageCandidate[last]
+		wq.triageCandidate = wq.triageCandidate[:last]
 	} else if len(wq.triage) != 0 {
 		last := len(wq.triage) - 1
 		item = wq.triage[last]
@@ -121,6 +127,7 @@ func (wq *WorkQueue) dequeue() (item interface{}) {
 		default:
 		}
 	}
+
 	return item
 }
 

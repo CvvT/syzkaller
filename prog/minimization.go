@@ -228,7 +228,7 @@ func (typ *ResourceType) minimize(ctx *minimizeArgsCtx, arg Arg, path string) bo
 	}
 	a.Res, a.Val = r0, 0
 	a.Res.uses[a] = true
-	return true
+	return false
 }
 
 func (typ *BufferType) minimize(ctx *minimizeArgsCtx, arg Arg, path string) bool {

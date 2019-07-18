@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/syzkaller/pkg/cover"
@@ -28,6 +29,9 @@ import (
 	"github.com/google/syzkaller/pkg/vcs"
 	"github.com/google/syzkaller/prog"
 	"github.com/google/syzkaller/sys"
+
+	"github.com/google/syzkaller/pkg/hash"
+	"github.com/google/syzkaller/pkg/rpctype"
 )
 
 func (mgr *Manager) initHTTP() {
@@ -45,6 +49,11 @@ func (mgr *Manager) initHTTP() {
 	// Browsers like to request this, without special handler this goes to / handler.
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {})
 
+	// CWT: add support for manually adding seeds to the corpus
+	http.HandleFunc("/seeds", mgr.httpSeeds)
+	http.HandleFunc("/addseed", mgr.httpAddSeed)
+	http.HandleFunc("/inputseed", mgr.httpInputSeed)
+
 	ln, err := net.Listen("tcp4", mgr.cfg.HTTP)
 	if err != nil {
 		log.Fatalf("failed to listen on %v: %v", mgr.cfg.HTTP, err)
@@ -54,6 +63,95 @@ func (mgr *Manager) initHTTP() {
 		err := http.Serve(ln, nil)
 		log.Fatalf("failed to serve http: %v", err)
 	}()
+}
+
+// CWT: interface to add seeds
+type Context struct {
+	seeds map[string]rpctype.RPCInput
+	mu    sync.Mutex
+}
+
+var globalCtx = Context{
+	seeds: make(map[string]rpctype.RPCInput),
+}
+
+func (mgr *Manager) httpSeeds(w http.ResponseWriter, r *http.Request) {
+	globalCtx.mu.Lock()
+	defer globalCtx.mu.Unlock()
+
+	data := UISeeds{}
+	for sig, inp := range globalCtx.seeds {
+		p, err := mgr.target.Deserialize(inp.Prog, prog.NonStrict)
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to deserialize program: %v", err), http.StatusInternalServerError)
+			return
+		}
+		data.Inputs = append(data.Inputs, &UIInput{
+			Sig:   sig,
+			Short: p.String(),
+			Cover: len(inp.Cover),
+		})
+	}
+	sort.Slice(data.Inputs, func(i, j int) bool {
+		a, b := data.Inputs[i], data.Inputs[j]
+		if a.Cover != b.Cover {
+			return a.Cover > b.Cover
+		}
+		return a.Short < b.Short
+	})
+
+	if err := seedsTemplate.Execute(w, data); err != nil {
+		http.Error(w, fmt.Sprintf("failed to execute template: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (mgr *Manager) httpAddSeed(w http.ResponseWriter, r *http.Request) {
+	inp := r.FormValue("program")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if inp == "" {
+		io.WriteString(w, "failed: empty program")
+		return
+	}
+
+	// check validity
+	val := []byte(inp)
+	_, err := mgr.target.Deserialize(val, prog.NonStrict)
+	if err != nil {
+		io.WriteString(w, "failed: invalid program")
+		return
+	}
+	// Add to corpus
+	globalCtx.mu.Lock()
+	defer globalCtx.mu.Unlock()
+	sig := hash.String(val)
+	seed := rpctype.RPCInput{
+		Call:   "",
+		Prog:   val,
+		Signal: signal.Serial{},
+		Cover:  nil,
+	}
+	if _, ok := globalCtx.seeds[sig]; ok {
+		io.WriteString(w, "Failed: already in the corpus")
+		return
+	} else {
+		globalCtx.seeds[sig] = seed
+	}
+	// Add to candidates
+	mgr.addNewCandidates([][]byte{val})
+	io.WriteString(w, "Successfully added!")
+}
+
+func (mgr *Manager) httpInputSeed(w http.ResponseWriter, r *http.Request) {
+	globalCtx.mu.Lock()
+	defer globalCtx.mu.Unlock()
+	inp, ok := globalCtx.seeds[r.FormValue("sig")]
+	if !ok {
+		http.Error(w, "can't find the input", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write(inp.Prog)
 }
 
 func (mgr *Manager) httpSummary(w http.ResponseWriter, r *http.Request) {
@@ -628,6 +726,10 @@ type UIInput struct {
 	Cover int
 }
 
+type UISeeds struct {
+	Inputs []*UIInput
+}
+
 var summaryTemplate = html.CreatePage(`
 <!doctype html>
 <html>
@@ -779,6 +881,39 @@ var corpusTemplate = html.CreatePage(`
 	</tr>
 	{{end}}
 </table>
+</body></html>
+`)
+
+var seedsTemplate = html.CreatePage(`
+<!doctype html>
+<html>
+<head>
+	<title>syzkaller seeds</title>
+	{{HEAD}}
+</head>
+<body>
+
+<table class="list_table">
+	<caption>Added Seeds:</caption>
+	<tr>
+		<th>Coverage</th>
+		<th>Program</th>
+	</tr>
+	{{range $inp := $.Inputs}}
+	<tr>
+		<td><a href='/cover?input={{$inp.Sig}}'>{{$inp.Cover}}</a></td>
+		<td><a href="/inputseed?sig={{$inp.Sig}}">{{$inp.Short}}</a></td>
+	</tr>
+	{{end}}
+</table>
+
+<form action='/addseed' method='post'>
+<textarea rows = "10" cols = "60" name = "program">
+Enter a program here...
+</textarea><br>
+ <input type = "submit" value = "submit" />
+</form>
+
 </body></html>
 `)
 
