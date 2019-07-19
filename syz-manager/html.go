@@ -53,6 +53,7 @@ func (mgr *Manager) initHTTP() {
 	http.HandleFunc("/seeds", mgr.httpSeeds)
 	http.HandleFunc("/addseed", mgr.httpAddSeed)
 	http.HandleFunc("/inputseed", mgr.httpInputSeed)
+	http.HandleFunc("/findseed", mgr.httpFindSeed)
 
 	ln, err := net.Listen("tcp4", mgr.cfg.HTTP)
 	if err != nil {
@@ -79,7 +80,9 @@ func (mgr *Manager) httpSeeds(w http.ResponseWriter, r *http.Request) {
 	globalCtx.mu.Lock()
 	defer globalCtx.mu.Unlock()
 
-	data := UISeeds{}
+	data := UISeeds{
+		Mode: 1, // seeds
+	}
 	for sig, inp := range globalCtx.seeds {
 		p, err := mgr.target.Deserialize(inp.Prog, prog.NonStrict)
 		if err != nil {
@@ -142,13 +145,70 @@ func (mgr *Manager) httpAddSeed(w http.ResponseWriter, r *http.Request) {
 	io.WriteString(w, "Successfully added!")
 }
 
-func (mgr *Manager) httpInputSeed(w http.ResponseWriter, r *http.Request) {
-	globalCtx.mu.Lock()
-	defer globalCtx.mu.Unlock()
-	inp, ok := globalCtx.seeds[r.FormValue("sig")]
-	if !ok {
-		http.Error(w, "can't find the input", http.StatusInternalServerError)
+func (mgr *Manager) httpFindSeed(w http.ResponseWriter, r *http.Request) {
+	// parse the given address
+	line := r.FormValue("line")
+	if line == "" {
+		http.Error(w, "failed: empty line", http.StatusInternalServerError)
 		return
+	}
+	if strings.HasPrefix(line, "0x") {
+		line = line[2:]
+	}
+	addr, err := strconv.ParseUint(line, 16, 64)
+	if err != nil {
+		http.Error(w, "cannot parse the line", http.StatusInternalServerError)
+		return
+	}
+
+	// search for seed containing the address
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+
+	data := UISeeds{
+		Mode: 0, // Find
+	}
+	for sig, inp := range mgr.corpus {
+		for _, pc := range inp.Cover {
+			fullPC := cover.RestorePC(pc, initCoverVMOffset)
+			prevPC := cover.PreviousInstructionPC(mgr.cfg.TargetVMArch, fullPC)
+			if prevPC == addr {
+				p, err1 := mgr.target.Deserialize(inp.Prog, prog.NonStrict)
+				if err1 != nil {
+					break
+				}
+
+				data.Inputs = append(data.Inputs, &UIInput{
+					Sig:   sig,
+					Short: p.String(),
+					Cover: len(inp.Cover),
+				})
+				break
+			}
+		}
+	}
+
+	if err := seedsTemplate.Execute(w, data); err != nil {
+		http.Error(w, fmt.Sprintf("failed to execute template: %v", err), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (mgr *Manager) httpInputSeed(w http.ResponseWriter, r *http.Request) {
+	sig := r.FormValue("sig")
+	// check globalCtx first
+	globalCtx.mu.Lock()
+	inp, ok := globalCtx.seeds[sig]
+	globalCtx.mu.Unlock()
+	if !ok {
+		// check corpus then
+		mgr.mu.Lock()
+		inp, ok = mgr.corpus[sig]
+		mgr.mu.Unlock()
+		if !ok {
+			http.Error(w, "can't find the input", http.StatusInternalServerError)
+			return
+		}
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write(inp.Prog)
@@ -509,6 +569,8 @@ func (mgr *Manager) httpReport(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// CWT: add line info to each PC.
+// Support file or function level filter.
 func (mgr *Manager) httpRawCover(w http.ResponseWriter, r *http.Request) {
 	mgr.mu.Lock()
 	defer mgr.mu.Unlock()
@@ -538,10 +600,34 @@ func (mgr *Manager) httpRawCover(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	buf := bufio.NewWriter(w)
-	for _, pc := range pcs {
-		fmt.Fprintf(buf, "0x%x\n", pc)
+
+	funcName := r.FormValue("func")
+	fileName := r.FormValue("file")
+	if fileName == "" && funcName == "" {
+		for _, pc := range pcs {
+			fmt.Fprintf(buf, "0x%x\n", pc)
+		}
+		buf.Flush()
+		return
+	}
+
+	// function/file filter
+	frames, err := reportGenerator.Addr2line(pcs)
+	if err != nil {
+		http.Error(w, "failed: addr2line", http.StatusInternalServerError)
+		return
+	}
+
+	for _, frame := range frames {
+		if (funcName != "" && frame.Func == funcName) ||
+			(fileName != "" && strings.HasSuffix(frame.File, fileName)) {
+			remain := filepath.Clean(strings.TrimPrefix(frame.File, mgr.cfg.KernelSrc))
+			fmt.Fprintf(buf, "0x%x %s:%d\n", frame.PC, remain, frame.Line)
+		}
 	}
 	buf.Flush()
+
+	runtime.GC()
 }
 
 func (mgr *Manager) collectCrashes(workdir string) ([]*UICrashType, error) {
@@ -727,6 +813,7 @@ type UIInput struct {
 }
 
 type UISeeds struct {
+	Mode   int
 	Inputs []*UIInput
 }
 
@@ -907,13 +994,14 @@ var seedsTemplate = html.CreatePage(`
 	{{end}}
 </table>
 
+{{if eq $.Mode 1}}
 <form action='/addseed' method='post'>
 <textarea rows = "10" cols = "60" name = "program">
 Enter a program here...
 </textarea><br>
  <input type = "submit" value = "submit" />
 </form>
-
+{{end}}
 </body></html>
 `)
 

@@ -244,6 +244,19 @@ func (rg *ReportGenerator) symbolize(pcs []uint64) ([]symbolizer.Frame, string, 
 	return frames, prefix, nil
 }
 
+// CWT: address to line
+func (rg *ReportGenerator) Addr2line(pcs []uint64) ([]symbolizer.Frame, error) {
+	symb := symbolizer.NewSymbolizer()
+	defer symb.Close()
+
+	frames, err := symb.SymbolizeArray(rg.vmlinux, pcs)
+	if err != nil {
+		return nil, err
+	}
+
+	return frames, nil
+}
+
 func combinePrefix(prefix, prefix2 string) string {
 	i := 0
 	for ; i < len(prefix) && i < len(prefix2); i++ {
