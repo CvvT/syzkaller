@@ -54,6 +54,7 @@ func (mgr *Manager) initHTTP() {
 	http.HandleFunc("/addseed", mgr.httpAddSeed)
 	http.HandleFunc("/inputseed", mgr.httpInputSeed)
 	http.HandleFunc("/findseed", mgr.httpFindSeed)
+	http.HandleFunc("/seedcover", mgr.httpSeedCover)
 
 	ln, err := net.Listen("tcp4", mgr.cfg.HTTP)
 	if err != nil {
@@ -106,6 +107,29 @@ func (mgr *Manager) httpSeeds(w http.ResponseWriter, r *http.Request) {
 	if err := seedsTemplate.Execute(w, data); err != nil {
 		http.Error(w, fmt.Sprintf("failed to execute template: %v", err), http.StatusInternalServerError)
 		return
+	}
+}
+
+func (mgr *Manager) feedback(a *rpctype.RPCFeedback) {
+	_, err := mgr.target.Deserialize(a.Prog, prog.NonStrict)
+	if err != nil {
+		log.Logf(0, "failed to parse candidate prog")
+		return
+	}
+
+	sig := hash.String(a.Prog)
+	globalCtx.mu.Lock()
+	defer globalCtx.mu.Unlock()
+
+	if old, ok := globalCtx.seeds[sig]; !ok {
+		return
+	} else {
+		// update coverage info
+		old.Cover = a.Cover
+		globalCtx.seeds[sig] = old
+		// output details
+		log.Logf(0, "executing program:\n%s", a.Prog)
+		log.Logf(0, "errnos: v", a.Errno)
 	}
 }
 
@@ -212,6 +236,34 @@ func (mgr *Manager) httpInputSeed(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write(inp.Prog)
+}
+
+func (mgr *Manager) httpSeedCover(w http.ResponseWriter, r *http.Request) {
+	sig := r.FormValue("input")
+	if sig == "" {
+		http.Error(w, "no input provided", http.StatusInternalServerError)
+		return
+	}
+
+	globalCtx.mu.Lock()
+	inp, ok := globalCtx.seeds[sig]
+	globalCtx.mu.Unlock()
+
+	if ok {
+		mgr.mu.Lock()
+		defer mgr.mu.Unlock()
+
+		var cov cover.Cover
+		cov.Merge(inp.Cover)
+		if err := generateCoverHTML(w, mgr.cfg.KernelObj, mgr.sysTarget.KernelObject,
+			mgr.cfg.KernelSrc, mgr.cfg.TargetVMArch, mgr.cfg.TargetOS, cov); err != nil {
+			http.Error(w, fmt.Sprintf("failed to generate coverage profile: %v", err), http.StatusInternalServerError)
+			return
+		}
+		runtime.GC()
+	} else {
+		mgr.httpCover(w, r)
+	}
 }
 
 func (mgr *Manager) httpSummary(w http.ResponseWriter, r *http.Request) {
@@ -988,7 +1040,7 @@ var seedsTemplate = html.CreatePage(`
 	</tr>
 	{{range $inp := $.Inputs}}
 	<tr>
-		<td><a href='/cover?input={{$inp.Sig}}'>{{$inp.Cover}}</a></td>
+		<td><a href='/seedcover?input={{$inp.Sig}}'>{{$inp.Cover}}</a></td>
 		<td><a href="/inputseed?sig={{$inp.Sig}}">{{$inp.Short}}</a></td>
 	</tr>
 	{{end}}

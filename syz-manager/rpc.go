@@ -42,6 +42,9 @@ type RPCManagerView interface {
 	machineChecked(result *rpctype.CheckArgs)
 	newInput(inp rpctype.RPCInput, sign signal.Signal)
 	candidateBatch(size int) []rpctype.RPCCandidate
+
+	// CWT:
+	feedback(inp *rpctype.RPCFeedback)
 }
 
 func startRPCServer(mgr *Manager) (int, error) {
@@ -98,6 +101,12 @@ func (serv *RPCServer) Check(a *rpctype.CheckArgs, r *int) error {
 	serv.mgr.machineChecked(a)
 	a.DisabledCalls = nil
 	serv.checkResult = a
+	return nil
+}
+
+// CWT
+func (serv *RPCServer) Feedback(a *rpctype.RPCFeedback, r *int) error {
+	serv.mgr.feedback(a)
 	return nil
 }
 

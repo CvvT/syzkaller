@@ -355,6 +355,13 @@ func (fuzzer *Fuzzer) poll(needCandidates bool, stats map[string]uint64) bool {
 	return len(r.NewInputs) != 0 || len(r.Candidates) != 0 || maxSignal.Len() != 0
 }
 
+// CWT:
+func (fuzzer *Fuzzer) sendFeedbackToManager(inp rpctype.RPCFeedback) {
+	if err := fuzzer.manager.Call("Manager.Feedback", &inp, nil); err != nil {
+		log.Fatalf("Manager.Feedback call failed: %v", err)
+	}
+}
+
 func (fuzzer *Fuzzer) sendInputToManager(inp rpctype.RPCInput) {
 	a := &rpctype.NewInputArgs{
 		Name:     fuzzer.name,

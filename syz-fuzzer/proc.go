@@ -77,7 +77,8 @@ func (proc *Proc) loop() {
 			case *WorkTriage:
 				proc.triageInput(item)
 			case *WorkCandidate:
-				proc.execute(proc.execOpts, item.p, item.flags, StatCandidate)
+				// proc.execute(proc.execOpts, item.p, item.flags, StatCandidate)
+				proc.candidateInput(item)
 			case *WorkSmash:
 				proc.smashInput(item)
 			default:
@@ -101,6 +102,25 @@ func (proc *Proc) loop() {
 			proc.execute(proc.execOpts, p, ProgNormal, StatFuzz)
 		}
 	}
+}
+
+func (proc *Proc) candidateInput(item *WorkCandidate) {
+	info := proc.execute(proc.execOpts, item.p, item.flags, StatCandidate)
+
+	// Send feedback to manager
+	var cov cover.Cover
+	errnos := make([]int, len(info.Calls))
+	for _, inf := range info.Calls {
+		cov.Merge(inf.Cover)
+		errnos = append(errnos, inf.Errno)
+	}
+	cov.Merge(info.Extra.Cover)
+
+	proc.fuzzer.sendFeedbackToManager(rpctype.RPCFeedback{
+		Prog:  item.p.Serialize(),
+		Cover: cov.Serialize(),
+		Errno: errnos,
+	})
 }
 
 func (proc *Proc) triageInput(item *WorkTriage) {

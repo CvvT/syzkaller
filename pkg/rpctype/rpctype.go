@@ -24,6 +24,13 @@ type RPCCandidate struct {
 	Smashed   bool
 }
 
+// CWT: feedback
+type RPCFeedback struct {
+	Prog  []byte
+	Cover []uint32
+	Errno []int
+}
+
 type ConnectArgs struct {
 	Name string
 }
