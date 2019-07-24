@@ -22,6 +22,7 @@ type RPCCandidate struct {
 	Prog      []byte
 	Minimized bool
 	Smashed   bool
+	FromUser  bool
 }
 
 // CWT: feedback

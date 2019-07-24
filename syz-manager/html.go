@@ -129,7 +129,7 @@ func (mgr *Manager) feedback(a *rpctype.RPCFeedback) {
 		globalCtx.seeds[sig] = old
 		// output details
 		log.Logf(0, "executing program:\n%s", a.Prog)
-		log.Logf(0, "errnos: v", a.Errno)
+		log.Logf(0, "errnos: %v, cover: %v", a.Errno, len(old.Cover))
 	}
 }
 
@@ -142,12 +142,13 @@ func (mgr *Manager) httpAddSeed(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// check validity
-	val := []byte(inp)
-	_, err := mgr.target.Deserialize(val, prog.NonStrict)
+	p, err := mgr.target.Deserialize([]byte(inp), prog.NonStrict)
 	if err != nil {
 		io.WriteString(w, "failed: invalid program")
 		return
 	}
+	val := p.Serialize()
+
 	// Add to corpus
 	globalCtx.mu.Lock()
 	defer globalCtx.mu.Unlock()
@@ -165,7 +166,7 @@ func (mgr *Manager) httpAddSeed(w http.ResponseWriter, r *http.Request) {
 		globalCtx.seeds[sig] = seed
 	}
 	// Add to candidates
-	mgr.addNewCandidates([][]byte{val})
+	mgr.addNewCandidate(val, true)
 	io.WriteString(w, "Successfully added!")
 }
 

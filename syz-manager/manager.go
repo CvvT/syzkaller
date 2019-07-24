@@ -861,6 +861,19 @@ func (mgr *Manager) addNewCandidates(progs [][]byte) {
 	}
 }
 
+// CWT: Add a single candidate
+func (mgr *Manager) addNewCandidate(inp []byte, fromUser bool) {
+	candidate := rpctype.RPCCandidate{
+		Prog:      inp,
+		Minimized: false,
+		Smashed:   false,
+		FromUser:  fromUser,
+	}
+	mgr.mu.Lock()
+	defer mgr.mu.Unlock()
+	mgr.candidates = append(mgr.candidates, candidate)
+}
+
 func (mgr *Manager) minimizeCorpus() {
 	if mgr.phase < phaseLoadedCorpus || len(mgr.corpus) <= mgr.lastMinCorpus*101/100 {
 		return

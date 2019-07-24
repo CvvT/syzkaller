@@ -28,7 +28,8 @@ type WorkQueue struct {
 type ProgTypes int
 
 const (
-	ProgCandidate ProgTypes = 1 << iota
+	ProgArtifact ProgTypes = 1 << iota
+	ProgCandidate
 	ProgMinimized
 	ProgSmashed
 	ProgNormal ProgTypes = 0

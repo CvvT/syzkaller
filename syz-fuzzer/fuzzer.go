@@ -344,6 +344,10 @@ func (fuzzer *Fuzzer) poll(needCandidates bool, stats map[string]uint64) bool {
 		if candidate.Smashed {
 			flags |= ProgSmashed
 		}
+		// CWT: this one is from user
+		if candidate.FromUser {
+			flags |= ProgArtifact
+		}
 		fuzzer.workQueue.enqueue(&WorkCandidate{
 			p:     p,
 			flags: flags,

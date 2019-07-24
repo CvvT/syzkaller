@@ -105,14 +105,20 @@ func (proc *Proc) loop() {
 }
 
 func (proc *Proc) candidateInput(item *WorkCandidate) {
-	info := proc.execute(proc.execOpts, item.p, item.flags, StatCandidate)
+	// Manually inserted program needs immedidate result
+	var info *ipc.ProgInfo
+	if item.flags&ProgArtifact != 0 {
+		info = proc.execute(proc.execOptsCover, item.p, item.flags, StatCandidate)
+	} else {
+		info = proc.execute(proc.execOpts, item.p, item.flags, StatCandidate)
+	}
 
 	// Send feedback to manager
 	var cov cover.Cover
 	errnos := make([]int, len(info.Calls))
-	for _, inf := range info.Calls {
+	for i, inf := range info.Calls {
 		cov.Merge(inf.Cover)
-		errnos = append(errnos, inf.Errno)
+		errnos[i] = inf.Errno
 	}
 	cov.Merge(info.Extra.Cover)
 
